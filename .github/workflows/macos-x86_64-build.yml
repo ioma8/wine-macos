@@ -35,6 +35,15 @@ jobs:
             bison \
             pkg-config
           
+          # Make sure the Homebrew-installed bison is used (system bison on macOS is often too old)
+          BISON_PREFIX="$(brew --prefix bison)"
+          echo "Adding Homebrew bison to PATH: $BISON_PREFIX/bin"
+          export PATH="$BISON_PREFIX/bin:$PATH"
+          
+          # Verify tools and architecture
+          which bison || true
+          bison --version || true
+          
           # Ensure we have the necessary command line tools
           xcode-select --install 2>/dev/null || true
           
