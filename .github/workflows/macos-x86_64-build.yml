@@ -99,10 +99,20 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Wine binary information:**" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          file loader/wine* >> $GITHUB_STEP_SUMMARY
+          if ls loader/wine* 1> /dev/null 2>&1; then
+            file loader/wine* >> $GITHUB_STEP_SUMMARY || echo "Could not get file info" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No wine binaries found" >> $GITHUB_STEP_SUMMARY
+          fi
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Architecture verification:**" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          lipo -info loader/wine* >> $GITHUB_STEP_SUMMARY
+          if ls loader/wine* 1> /dev/null 2>&1; then
+            for binary in loader/wine*; do
+              lipo -info "$binary" >> $GITHUB_STEP_SUMMARY || echo "Could not get lipo info for $binary" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "No wine binaries found" >> $GITHUB_STEP_SUMMARY
+          fi
           echo '```' >> $GITHUB_STEP_SUMMARY
