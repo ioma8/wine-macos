@@ -1,0 +1,108 @@
+name: macOS x86_64 Build
+
+# Manual trigger as requested in the issue
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos-x86_64:
+    name: Build Wine x86_64 on macOS
+    runs-on: macos-13  # macOS 13 is the latest with x86_64 architecture
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      
+      - name: Install dependencies
+        run: |
+          # Update Homebrew
+          brew update
+          
+          # Install required build dependencies according to Wine macOS building guide
+          # https://gitlab.winehq.org/wine/wine/-/wikis/MacOS-Building
+          brew install --formula \
+            freetype \
+            gnutls \
+            sdl2 \
+            molten-vk \
+            mingw-w64 \
+            bison \
+            pkg-config
+          
+          # Ensure we have the necessary command line tools
+          xcode-select --install 2>/dev/null || true
+          
+          # Check architecture
+          echo "Architecture: $(uname -m)"
+          
+      - name: Configure build
+        run: |
+          # Configure Wine for x86_64 build
+          # According to the Wine documentation, we enable x86_64 architecture explicitly
+          ./configure --enable-archs=x86_64 --disable-tests
+          
+      - name: Build Wine
+        run: |
+          # Build Wine with all cores available
+          make -j$(sysctl -n hw.ncpu)
+          
+      - name: Verify binary architecture
+        run: |
+          # Check that the wine binary is x86_64
+          if [ -f "loader/wine" ]; then
+            echo "Checking wine binary architecture..."
+            file loader/wine
+            lipo -info loader/wine
+            
+            # Verify it's x86_64
+            if lipo -info loader/wine | grep -q "x86_64"; then
+              echo "✓ Wine binary is x86_64 as expected"
+            else
+              echo "✗ Wine binary is NOT x86_64!"
+              exit 1
+            fi
+          else
+            echo "✗ Wine binary not found at loader/wine"
+            exit 1
+          fi
+          
+          # Also check wine64 if it exists
+          if [ -f "loader/wine64" ]; then
+            echo "Checking wine64 binary architecture..."
+            file loader/wine64
+            lipo -info loader/wine64
+            
+            if lipo -info loader/wine64 | grep -q "x86_64"; then
+              echo "✓ Wine64 binary is x86_64 as expected"
+            else
+              echo "✗ Wine64 binary is NOT x86_64!"
+              exit 1
+            fi
+          fi
+          
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-macos-x86_64
+          path: |
+            loader/wine*
+            libs/**/*.dylib
+          retention-days: 7
+          
+      - name: Build summary
+        run: |
+          echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✓ Successfully built Wine for macOS x86_64" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Wine binary information:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          file loader/wine* >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Architecture verification:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          lipo -info loader/wine* >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
