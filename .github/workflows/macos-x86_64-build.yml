@@ -9,6 +9,10 @@ jobs:
     name: Build Wine x86_64 on macOS
     runs-on: macos-13  # macOS 13 is the latest with x86_64 architecture
     
+    permissions:
+      contents: read  # Required for checkout
+      actions: read   # Required for artifact upload
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
