@@ -179,8 +179,8 @@ static const char* full_value_string(const struct full_value* fv)
 
     switch (fv->type)
     {
-    case fv_integer: sprintf(tmp, "0x%x", fv->v.i); break;
-    case fv_longlong: sprintf(tmp, "0x%x%08x", (unsigned)(fv->v.llu >> 32), (unsigned)fv->v.llu); break;
+    case fv_integer: snprintf(tmp, sizeof(tmp), "0x%x", fv->v.i); break;
+    case fv_longlong: snprintf(tmp, sizeof(tmp), "0x%x%08x", (unsigned)(fv->v.llu >> 32), (unsigned)fv->v.llu); break;
     }
     return tmp;
 }
@@ -244,9 +244,9 @@ static const char* get_property(cv_property_t prop)
     if (prop.is_scoped)                 X("scoped");
     if (prop.has_decorated_name)        X("decorated-name");
     if (prop.is_sealed)                 X("sealed");
-    if (prop.hfa)                       pos += sprintf(tmp, "hfa%x", prop.hfa);
+    if (prop.hfa)                       pos += snprintf(tmp, sizeof(tmp) - pos, "hfa%x", prop.hfa);
     if (prop.is_intrinsic)              X("intrinsic");
-    if (prop.mocom)                     pos += sprintf(tmp, "mocom%x", prop.mocom);
+    if (prop.mocom)                     pos += snprintf(tmp, sizeof(tmp) - pos, "mocom%x", prop.mocom);
 #undef X
     if (!pos) return "none";
 
@@ -266,7 +266,7 @@ static const char* get_funcattr(unsigned attr)
     if (attr & 0x0001) X("C++ReturnUDT");
     if (attr & 0x0002) X("Ctor");
     if (attr & 0x0004) X("Ctor-w/virtualbase");
-    if (attr & 0xfff8) pos += sprintf(tmp, "unk:%x", attr & 0xfff8);
+    if (attr & 0xfff8) pos += snprintf(tmp, sizeof(tmp), "unk:%x", attr & 0xfff8);
 #undef X
 
     tmp[pos] = '\0';
@@ -292,7 +292,7 @@ static const char* get_varflags(struct cv_local_varflag flags)
     if (flags.optimized_out)   X("optimized-out");
     if (flags.enreg_global)    X("enreg-global");
     if (flags.enreg_static)    X("enreg-static");
-    if (flags.unused)          pos += sprintf(tmp, "unk:%x", flags.unused);
+    if (flags.unused)          pos += snprintf(tmp, sizeof(tmp), "unk:%x", flags.unused);
 #undef X
 
     if (!pos) return "none";
@@ -386,7 +386,7 @@ static const char* get_machine(unsigned m)
     default:
         {
             static char tmp[16];
-            sprintf(tmp, "machine=%x", m);
+            snprintf(tmp, sizeof(tmp), "machine=%x", m);
             machine = tmp;
         }
         break;
@@ -420,7 +420,7 @@ static const char* get_language(unsigned l)
     default:
         {
             static char tmp[16];
-            sprintf(tmp, "lang=%x", l);
+            snprintf(tmp, sizeof(tmp), "lang=%x", l);
             lang = tmp;
         }
         break;
@@ -463,7 +463,7 @@ static const char* get_callconv(unsigned cc)
     default:
         {
             static char tmp[20];
-            sprintf(tmp, "callconv=%x", cc);
+            snprintf(tmp, sizeof(tmp), "callconv=%x", cc);
             callconv = tmp;
         }
         break;
@@ -1009,13 +1009,19 @@ static void codeview_dump_one_type(unsigned curr_type, const union codeview_type
         break;
 
     case LF_MODIFIER_V1:
-        printf("\t%x => Modifier V1 type:%x modif:%x\n",
-               curr_type, type->modifier_v1.type, type->modifier_v1.attribute);
+        printf("\t%x => Modifier V1 type:%x modif:%x%s%s%s\n",
+               curr_type, type->modifier_v1.type, type->modifier_v1.attribute,
+               (type->modifier_v1.attribute & 1) ? "-const" : "",
+               (type->modifier_v1.attribute & 2) ? "-volatile" : "",
+               (type->modifier_v1.attribute & 4) ? "-unaligned" : "");
         break;
 
     case LF_MODIFIER_V2:
-        printf("\t%x => Modifier V2 type:%x modif:%x\n",
-               curr_type, type->modifier_v2.type, type->modifier_v2.attribute);
+        printf("\t%x => Modifier V2 type:%x modif:%x%s%s%s\n",
+               curr_type, type->modifier_v2.type, type->modifier_v2.attribute,
+               (type->modifier_v2.attribute & 1) ? "-const" : "",
+               (type->modifier_v2.attribute & 2) ? "-volatile" : "",
+               (type->modifier_v2.attribute & 4) ? "-unaligned" : "");
         break;
 
     case LF_METHODLIST_V1:
@@ -1180,7 +1186,7 @@ BOOL codeview_dump_types_from_offsets(const void* table, const DWORD* offsets, u
     return TRUE;
 }
 
-BOOL codeview_dump_types_from_block(const void* table, unsigned long len)
+BOOL codeview_dump_types_from_block(const void* table, unsigned long len, unsigned int from, unsigned int to)
 {
     unsigned int        curr_type = 0x1000;
     const unsigned char*ptr = table;
@@ -1189,7 +1195,8 @@ BOOL codeview_dump_types_from_block(const void* table, unsigned long len)
     {
         const union codeview_type* type = (const union codeview_type*)ptr;
 
-        codeview_dump_one_type(curr_type, type);
+        if (from <= curr_type && curr_type < to)
+            codeview_dump_one_type(curr_type, type);
         curr_type++;
         ptr += type->generic.len + 2;
     }
@@ -1356,6 +1363,9 @@ BOOL codeview_dump_symbols(const void* root, unsigned long start, unsigned long 
     int          length;
     struct symbol_dumper sd;
 
+    if (start == sizeof(unsigned))
+        printf("        [header: %x]\n", *((unsigned*)root));
+
     init_symbol_dumper(&sd);
     /*
      * Loop over the different types of records and whenever we
@@ -1430,12 +1440,21 @@ BOOL codeview_dump_symbols(const void* root, unsigned long start, unsigned long 
 	case S_PROCREF:
 	case S_LPROCREF:
 	case S_TOKENREF:
-            printf("%sref V3 '%s' %04x:%08x name:%08x\n",
-                   sym->generic.id == S_DATAREF ? "Data" :
-                                      (sym->generic.id == S_PROCREF ? "Proc" :
-                                       (sym->generic.id == S_LPROCREF ? "Lproc" : "Token")),
-                   get_symbol_str(sym->refsym2_v3.name),
-                   sym->refsym2_v3.imod, sym->refsym2_v3.ibSym, sym->refsym2_v3.sumName);
+        case S_ANNOTATIONREF:
+            {
+                const char *kind;
+                switch (sym->generic.id)
+                {
+                case S_DATAREF:       kind = "Data";       break;
+                case S_PROCREF:       kind = "Proc";       break;
+                case S_LPROCREF:      kind = "LProc";      break;
+                case S_TOKENREF:      kind = "Token";      break;
+                case S_ANNOTATIONREF: kind = "Annotation"; break;
+                default:              kind = "----";       break;
+                }
+                printf("%sref V3 '%s' %04x:%08x name:%08x\n", kind, get_symbol_str(sym->refsym2_v3.name),
+                       sym->refsym2_v3.imod, sym->refsym2_v3.ibSym, sym->refsym2_v3.sumName);
+            }
 	    break;
 
         /*
@@ -1994,6 +2013,14 @@ BOOL codeview_dump_symbols(const void* root, unsigned long start, unsigned long 
             }
             break;
 
+        case S_ARMSWITCHTABLE:
+            printf("ARM switch table type=%u base=%04x:%08x branch=%04x:%08x table=%04x:%08x entries=#%u\n",
+                   sym->armswitchtable.switch_type,
+                   sym->armswitchtable.base_section, sym->armswitchtable.base_offset,
+                   sym->armswitchtable.branch_section, sym->armswitchtable.branch_offset,
+                   sym->armswitchtable.table_section, sym->armswitchtable.table_offset,
+                   sym->armswitchtable.number_entries);
+            break;
         default:
             printf("\n\t\t>>> Unsupported symbol-id %x sz=%d\n", sym->generic.id, sym->generic.len + 2);
             dump_data((const void*)sym, sym->generic.len + 2, "  ");

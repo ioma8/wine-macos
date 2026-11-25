@@ -26,7 +26,6 @@
 
 #include "winerror.h"
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winternl.h"
@@ -40,6 +39,9 @@
 #include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(file);
+
+#define TICKSPERSEC        10000000
+#define TICKSPERMSEC       10000
 
 /***********************************************************************
  *              create_file_OF
@@ -310,6 +312,15 @@ BOOL WINAPI FileTimeToDosDateTime( const FILETIME *ft, WORD *fatdate, WORD *fatt
     }
     time.u.LowPart  = ft->dwLowDateTime;
     time.u.HighPart = ft->dwHighDateTime;
+
+    /* For non-zero msec round to next second. */
+    if ((time.QuadPart % TICKSPERSEC) / TICKSPERMSEC)
+        time.QuadPart += TICKSPERSEC;
+
+    /* For odd number of seconds round to next even. */
+    if ((time.QuadPart / TICKSPERSEC) % 2)
+        time.QuadPart += TICKSPERSEC;
+
     RtlTimeToTimeFields( &time, &fields );
     if (fields.Year < 1980)
     {

@@ -405,6 +405,13 @@ sync_test("document_style_props", function() {
     ok(document.aLinkColor === "#deb8ad", "aLinkColor = " + document.aLinkColor);
 });
 
+sync_test("document_frag", function() {
+    var frag = document.createDocumentFragment()
+
+    frag.textContent = "1234";
+    ok(frag.textContent === "1234", "textContent = " + frag.textContent);
+});
+
 sync_test("style_properties", function() {
     document.body.innerHTML = '<div>test</div><svg></svg>';
     var elem = document.body.firstChild;
@@ -1162,4 +1169,28 @@ sync_test("document.open", function() {
     doc.onclick = f;
     doc.close();
     ok(doc.onclick === f, "doc.onclick != f");
+});
+
+sync_test("XMLSerializer", function() {
+    var serializer = new XMLSerializer();
+    ok(serializer !== null, "XMLSerializer constructor returned null");
+    ok(typeof serializer === "object", "XMLSerializer is not an object");
+
+    /* Test serializeToString with a simple element */
+    var div = document.createElement("div");
+    div.id = "testdiv";
+    div.innerHTML = "test content";
+
+    var result = serializer.serializeToString(div);
+    ok(/<div .*id="testdiv">test content<\/div>/.test(result), "unexpected result " + result);
+
+    /* Test with nested elements */
+    div = document.createElement("div");
+    div.innerHTML = '<span attr="attrval">nested</span>';
+    result = serializer.serializeToString(div);
+    ok(/<div.*><span attr="attrval">nested<\/span><\/div>/.test(result), "unexpected result " + result);
+
+    /* Test with text node */
+    result = serializer.serializeToString(document.createTextNode("plain text"));
+    ok(result === "plain text", "serialized text node missing content: " + result);
 });

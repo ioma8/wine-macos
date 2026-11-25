@@ -346,13 +346,51 @@ static DWORD ViewModeToListStyle(UINT ViewMode)
 	return dwStyle;
 }
 
+static const WCHAR listview_orig_proc[] = L"ORIG_PROC";
+
+static LRESULT CALLBACK listview_subclass_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    WNDPROC orig_proc = (WNDPROC)GetPropW(hwnd, listview_orig_proc);
+    LVITEMW item;
+    LRESULT ret;
+
+    if (!orig_proc)
+        return 0;
+
+    if (msg == WM_DESTROY)
+    {
+        RemovePropW(hwnd, listview_orig_proc);
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (DWORD_PTR)orig_proc);
+        return CallWindowProcW(orig_proc, hwnd, msg, wParam, lParam);
+    }
+
+    ret = CallWindowProcW(orig_proc, hwnd, msg, wParam, lParam);
+
+    /* Select all on Ctrl-A */
+    if (msg == WM_KEYDOWN)
+    {
+        if (wParam == 'A'
+                && (GetKeyState(VK_CONTROL) & 0x8000)
+                && !(lParam & 0x40000000))
+        {
+            item.stateMask = LVIS_SELECTED;
+            item.state = LVIS_SELECTED;
+            SendMessageW(hwnd, LVM_SETITEMSTATE, -1, (LPARAM)&item);
+        }
+    }
+
+    return ret;
+}
+
 /**********************************************************
 * ShellView_CreateList()
 *
 * - creates the list view window
 */
 static BOOL ShellView_CreateList (IShellViewImpl * This)
-{	DWORD dwStyle, dwExStyle;
+{
+    DWORD dwStyle, dwExStyle;
+    WNDPROC orig_proc;
 
 	TRACE("%p\n",This);
 
@@ -381,6 +419,8 @@ static BOOL ShellView_CreateList (IShellViewImpl * This)
 
 	if(!This->hWndList)
 	  return FALSE;
+        orig_proc = (WNDPROC)SetWindowLongPtrW(This->hWndList, GWLP_WNDPROC, (DWORD_PTR)listview_subclass_proc);
+        SetPropW(This->hWndList, listview_orig_proc, orig_proc);
 
         This->ListViewSortInfo.bIsAscending = TRUE;
         This->ListViewSortInfo.nHeaderID = -1;
@@ -1296,6 +1336,33 @@ static LRESULT ShellView_OnCommand(IShellViewImpl * This,DWORD dwCmdID, DWORD dw
 	return 0;
 }
 
+static void ShellView_InvokeClipboardVerb(IShellViewImpl *view, const char *verb)
+{
+    IContextMenu *menu = NULL;
+    CMINVOKECOMMANDINFO cmi;
+    HRESULT hr;
+
+    TRACE("%p, %s.\n", view, debugstr_a(verb));
+
+    if (!strcmp(verb, "paste"))
+        BackgroundMenu_Constructor(view->pSFParent, FALSE, &IID_IContextMenu, (void **)&menu);
+    else if (ShellView_GetSelections(view))
+        IShellFolder_GetUIObjectOf(view->pSFParent, view->hWndParent, view->cidl,
+                (LPCITEMIDLIST *)view->apidl, &IID_IContextMenu, NULL, (void **)&menu);
+
+    if (!menu)
+        return;
+
+    ZeroMemory(&cmi, sizeof(cmi));
+    cmi.cbSize = sizeof(cmi);
+    cmi.hwnd = view->hWndParent;
+    cmi.lpVerb = verb;
+    cmi.nShow = SW_SHOWNORMAL;
+    if (FAILED(hr = IContextMenu_InvokeCommand(menu, &cmi)))
+        WARN("Failed to invoke %s command, hr %#lx.\n", debugstr_a(verb), hr);
+    IContextMenu_Release(menu);
+}
+
 /**********************************************************
 * ShellView_OnNotify()
 */
@@ -1525,9 +1592,21 @@ static LRESULT ShellView_OnNotify(IShellViewImpl * This, UINT CtlID, LPNMHDR lpn
 	    {
 	      LPNMLVKEYDOWN plvKeyDown = (LPNMLVKEYDOWN) lpnmh;
 
-              /* initiate a rename of the selected file or directory */
               switch (plvKeyDown->wVKey)
               {
+              case 'C':
+              case 'X':
+              case 'V':
+                if (GetKeyState(VK_CONTROL) & 0x8000)
+                {
+                  if (plvKeyDown->wVKey == 'C')
+                    ShellView_InvokeClipboardVerb(This, "copy");
+                  else if (plvKeyDown->wVKey == 'X')
+                    ShellView_InvokeClipboardVerb(This, "cut");
+                  else
+                    ShellView_InvokeClipboardVerb(This, "paste");
+                }
+                break;
               case VK_F2:
                 {
                   INT i = SendMessageW(This->hWndList, LVM_GETSELECTEDCOUNT, 0, 0);

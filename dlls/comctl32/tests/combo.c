@@ -413,6 +413,59 @@ static void test_comboex_CB_GETLBTEXT(void)
     DestroyWindow(hCombo);
 }
 
+static WCHAR end_edit_text[CBEMAXSTRLEN];
+
+static LRESULT CALLBACK end_edit_parent_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    NMCBEENDEDITW *edit = (NMCBEENDEDITW *)lp;
+
+    if (msg == WM_NOTIFY && edit->hdr.code == CBEN_ENDEDITW)
+        lstrcpynW(end_edit_text, edit->szText, CBEMAXSTRLEN);
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void test_comboex_empty_text_end_edit(void)
+{
+    WNDCLASSW wc = { 0 };
+    COMBOBOXEXITEMW item = { 0 };
+    HWND parent, combo;
+    LRESULT ret;
+
+    wc.lpfnWndProc = end_edit_parent_proc;
+    wc.hInstance = hMainHinst;
+    wc.lpszClassName = L"ComboExEndEditParent";
+    RegisterClassW(&wc);
+    parent = CreateWindowW(wc.lpszClassName, L"parent", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                           0, 0, 400, 300, NULL, NULL, hMainHinst, NULL);
+    combo = CreateWindowExW(0, WC_COMBOBOXEXW, NULL, WS_VISIBLE | WS_CHILD | CBS_DROPDOWN,
+                            0, 0, 300, 200, parent, NULL, hMainHinst, NULL);
+
+    item.mask = CBEIF_TEXT;
+    item.iItem = -1;
+    item.pszText = (WCHAR *)L"";
+    ret = SendMessageW(combo, CBEM_INSERTITEMW, 0, (LPARAM)&item);
+    ok(ret == 0, "got %Id\n", ret);
+
+    /* Empty item text is returned as NULL. */
+    item.mask = CBEIF_TEXT;
+    item.iItem = 0;
+    item.pszText = NULL;
+    ret = SendMessageW(combo, CBEM_GETITEMW, 0, (LPARAM)&item);
+    ok(ret, "CBEM_GETITEMW failed\n");
+    ok(item.pszText == NULL, "got %p\n", item.pszText);
+
+    SetFocus(combo);
+    SendMessageW(combo, CB_SETCURSEL, 0, 0);
+
+    wcscpy(end_edit_text, L"untouched");
+    SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
+    SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+    ok(!end_edit_text[0], "got %s\n", debugstr_w(end_edit_text));
+
+    DestroyWindow(parent);
+    UnregisterClassW(wc.lpszClassName, hMainHinst);
+}
+
 static void test_comboex_WM_WINDOWPOSCHANGING(void)
 {
     HWND hCombo;
@@ -1689,6 +1742,70 @@ static void test_combo_keypresses(void)
     DestroyWindow(combo);
 }
 
+static int test_wm_measureitem_count;
+
+static LRESULT CALLBACK test_measure_item_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_MEASUREITEM)
+    {
+        MEASUREITEMSTRUCT *m = (MEASUREITEMSTRUCT *)lparam;
+        unsigned int expected;
+
+        ++test_wm_measureitem_count;
+        ok(m->CtlType == ODT_COMBOBOX, "got %#x.\n", m->CtlType);
+        ok(m->CtlID == COMBO_ID, "got %u.\n", m->CtlID);
+        if (m->itemID == -1)
+        {
+            expected = get_font_height(GetStockObject(SYSTEM_FONT)) + 2;
+            ok(m->itemHeight == expected, "got %u, expected %u.\n", m->itemHeight, expected);
+            m->itemHeight = expected + 4;
+        }
+        return TRUE;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static void test_combo_measureitem(DWORD style)
+{
+    unsigned int expected;
+    HWND parent, combo;
+    WNDCLASSW wc;
+    RECT r;
+
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.cbClsExtra = 0;
+    wc.cbWndExtra = 0;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hIcon = NULL;
+    wc.hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
+    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+    wc.lpszMenuName = NULL;
+    wc.lpszClassName = L"test_measure_item";
+    wc.lpfnWndProc = test_measure_item_wnd_proc;
+    RegisterClassW(&wc);
+
+    winetest_push_context("style %#lx", style);
+    parent = CreateWindowA("test_measure_item", "Test measure", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 10, 10, 300, 300, NULL, NULL, NULL, 0);
+    test_wm_measureitem_count = 0;
+    combo = CreateWindowA(WC_COMBOBOXA, "Combo", WS_VISIBLE | WS_CHILD | style, 5, 5, 100, 100, parent, (HMENU)COMBO_ID, NULL, 0);
+    if (style & CBS_OWNERDRAWFIXED)
+        ok(test_wm_measureitem_count == 2, "got %d.\n", test_wm_measureitem_count);
+    else if (style & CBS_OWNERDRAWVARIABLE)
+        ok(test_wm_measureitem_count == 1, "got %d.\n", test_wm_measureitem_count);
+    else
+        ok(!test_wm_measureitem_count, "got %d.\n", test_wm_measureitem_count);
+    GetClientRect(combo, &r);
+    expected = get_font_height(GetStockObject(SYSTEM_FONT)) + 8;
+    if (style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE))
+        expected += 4;
+    expect_rect(r, 0, 0, 100, expected);
+
+    DestroyWindow(combo);
+    DestroyWindow(parent);
+    UnregisterClassW(L"test_measure_item", GetModuleHandleA(NULL));
+    winetest_pop_context();
+}
+
 START_TEST(combo)
 {
     ULONG_PTR ctx_cookie;
@@ -1705,6 +1822,7 @@ START_TEST(combo)
     test_comboex();
     test_comboex_WM_LBUTTONDOWN();
     test_comboex_CB_GETLBTEXT();
+    test_comboex_empty_text_end_edit();
     test_comboex_WM_WINDOWPOSCHANGING();
     test_comboex_subclass();
     test_comboex_get_set_item();
@@ -1718,6 +1836,7 @@ START_TEST(combo)
 
     test_comboex();
     test_comboex_CB_GETLBTEXT();
+    test_comboex_empty_text_end_edit();
     test_comboex_WM_WINDOWPOSCHANGING();
     test_comboex_get_set_item();
     test_comboex_CBEN_GETDISPINFO();
@@ -1742,6 +1861,10 @@ START_TEST(combo)
     test_combo_dropdown_size(CBS_NOINTEGRALHEIGHT);
     test_combo_ctlcolor();
     test_combo_keypresses();
+    test_combo_measureitem(CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED);
+    test_combo_measureitem(CBS_DROPDOWNLIST | CBS_OWNERDRAWVARIABLE);
+    test_combo_measureitem(CBS_DROPDOWNLIST);
+    test_combo_measureitem(CBS_DROPDOWN | CBS_OWNERDRAWFIXED);
 
     cleanup();
     unload_v6_module(ctx_cookie, hCtx);

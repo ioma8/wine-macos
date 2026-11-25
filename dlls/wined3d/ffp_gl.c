@@ -157,6 +157,23 @@ GLenum wined3d_gl_compare_func(enum wined3d_cmp_func f)
     }
 }
 
+GLenum wined3d_gl_filter_reduction_mode(enum wined3d_filter_reduction_mode m)
+{
+    switch (m)
+    {
+        case WINED3D_FILTER_REDUCTION_WEIGHTED_AVERAGE:
+        case WINED3D_FILTER_REDUCTION_COMPARISON:
+            return GL_WEIGHTED_AVERAGE_ARB;
+        case WINED3D_FILTER_REDUCTION_MINIMUM:
+            return GL_MIN;
+        case WINED3D_FILTER_REDUCTION_MAXIMUM:
+            return GL_MAX;
+        default:
+            FIXME("Unhandled reduction mode %#x.\n", m);
+            return GL_WEIGHTED_AVERAGE_ARB;
+    }
+}
+
 static GLenum gl_blend_op(const struct wined3d_gl_info *gl_info, enum wined3d_blend_op op)
 {
     switch (op)
@@ -1067,8 +1084,7 @@ static void viewport_miscpart_cc(struct wined3d_context *context,
 {
     const struct wined3d_gl_info *gl_info = wined3d_context_gl(context)->gl_info;
     /* See get_projection_matrix() in glsl_shader.c for a discussion about those values. */
-    float pixel_center_offset = context->d3d_info->wined3d_creation_flags
-            & WINED3D_PIXEL_CENTER_INTEGER ? 0.5f : 0.0f;
+    float pixel_center_offset = ((context->d3d_info->wined3d_creation_flags & WINED3D_LEGACY) ? 0.5f : 0.0f);
     GLdouble depth_ranges[2 * WINED3D_MAX_VIEWPORTS];
     GLfloat viewports[4 * WINED3D_MAX_VIEWPORTS];
     unsigned int i, reset_count = 0;

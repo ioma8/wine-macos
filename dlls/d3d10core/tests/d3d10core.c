@@ -2070,7 +2070,7 @@ static void test_create_texture2d(void)
         {DXGI_FORMAT_R8G8B8A8_SNORM,         1, D3D10_BIND_RENDER_TARGET,   0, TRUE,  FALSE},
         {DXGI_FORMAT_R8G8B8A8_SINT,          1, D3D10_BIND_RENDER_TARGET,   0, TRUE,  FALSE},
         {DXGI_FORMAT_R8G8B8A8_UNORM,         1, D3D10_BIND_RENDER_TARGET,   D3D10_RESOURCE_MISC_SHARED | D3D10_RESOURCE_MISC_SHARED_KEYEDMUTEX,
-                FALSE, TRUE},
+                FALSE, FALSE},
         {DXGI_FORMAT_D24_UNORM_S8_UINT,      1, D3D10_BIND_SHADER_RESOURCE, 0, FALSE, TRUE},
         {DXGI_FORMAT_D24_UNORM_S8_UINT,      1, D3D10_BIND_RENDER_TARGET,   0, FALSE, FALSE},
         {DXGI_FORMAT_D32_FLOAT,              1, D3D10_BIND_SHADER_RESOURCE, 0, FALSE, TRUE},
@@ -4928,6 +4928,7 @@ static void test_pipeline_statistics_query(void)
         /* AMD has nonzero GSInvocations on Windows. */
         ok(!data.GSPrimitives, "Got unexpected GSPrimitives count: %u.\n", (unsigned int)data.GSPrimitives);
         ok(data.CInvocations == 2, "Got unexpected CInvocations count: %u.\n", (unsigned int)data.CInvocations);
+        todo_wine_if (!data.CPrimitives)
         ok(data.CPrimitives == 2, "Got unexpected CPrimitives count: %u.\n", (unsigned int)data.CPrimitives);
         todo_wine_if (!damavand)
             ok(!data.PSInvocations, "Got unexpected PSInvocations count: %u.\n", (unsigned int)data.PSInvocations);
@@ -4947,6 +4948,7 @@ static void test_pipeline_statistics_query(void)
     /* AMD has nonzero GSInvocations on Windows. */
     ok(!data.GSPrimitives, "Got unexpected GSPrimitives count: %u.\n", (unsigned int)data.GSPrimitives);
     ok(data.CInvocations == 2, "Got unexpected CInvocations count: %u.\n", (unsigned int)data.CInvocations);
+    todo_wine_if (!data.CPrimitives)
     ok(data.CPrimitives == 2, "Got unexpected CPrimitives count: %u.\n", (unsigned int)data.CPrimitives);
     ok(data.PSInvocations >= 640 * 480, "Got unexpected PSInvocations count: %u.\n", (unsigned int)data.PSInvocations);
 
@@ -11019,14 +11021,18 @@ static void test_swapchain_formats(void)
 
 static void test_swapchain_views(void)
 {
+    ID3D10RenderTargetView *rtv_rgb, *rtv_srgb;
     struct d3d10core_test_context test_context;
     D3D10_SHADER_RESOURCE_VIEW_DESC srv_desc;
     D3D10_RENDER_TARGET_VIEW_DESC rtv_desc;
     ID3D10ShaderResourceView *srv;
-    ID3D10RenderTargetView *rtv;
     ID3D10Device *device;
     ULONG refcount;
     HRESULT hr;
+
+    static const struct vec4 color = {0.2f, 0.3f, 0.5f, 1.0f};
+    static const RECT r1 = {15, 15, 16, 16};
+    static const RECT r2 = {5, 5, 6, 6};
 
     if (!init_test_context(&test_context))
         return;
@@ -11036,14 +11042,31 @@ static void test_swapchain_views(void)
     refcount = get_refcount(test_context.backbuffer);
     ok(refcount == 1, "Got refcount %lu.\n", refcount);
 
+    draw_color_quad(&test_context, &color);
+    check_texture_color(test_context.backbuffer, 0xff7f4c33, 1);
+
     rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     rtv_desc.ViewDimension = D3D10_RTV_DIMENSION_TEXTURE2D;
     rtv_desc.Texture2D.MipSlice = 0;
-    hr = ID3D10Device_CreateRenderTargetView(device, (ID3D10Resource *)test_context.backbuffer, &rtv_desc, &rtv);
-    /* This seems to work only on Windows 7. */
+    hr = ID3D10Device_CreateRenderTargetView(device, (ID3D10Resource *)test_context.backbuffer,
+            &rtv_desc, &rtv_srgb);
+    /* This does not work on some Windows versions. */
     ok(hr == S_OK || broken(hr == E_INVALIDARG), "Failed to create render target view, hr %#lx.\n", hr);
-    if (SUCCEEDED(hr))
-        ID3D10RenderTargetView_Release(rtv);
+    if (FAILED(hr))
+        goto done;
+
+    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    hr = ID3D10Device_CreateRenderTargetView(device, (ID3D10Resource *)test_context.backbuffer,
+            &rtv_desc, &rtv_rgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D10Device_OMSetRenderTargets(device, 1, &rtv_srgb, NULL);
+
+    refcount = get_refcount(test_context.backbuffer);
+    ok(refcount == 1, "Got unexpected refcount %lu.\n", refcount);
+
+    draw_color_quad(&test_context, &color);
+    check_texture_color(test_context.backbuffer, 0xffbc957c, 1);
 
     srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     srv_desc.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE2D;
@@ -11054,14 +11077,27 @@ static void test_swapchain_views(void)
     if (SUCCEEDED(hr))
         ID3D10ShaderResourceView_Release(srv);
 
+    /* Clear with an RGB view, draw with sRGB view and make sure the clear color has no sRGB
+     * correction applied. */
+    ID3D10Device_ClearRenderTargetView(device, rtv_rgb, (const float *)&color);
+    set_viewport(device, 0.0f, 0.0f, 10.0f, 10.0f, 0.0f, 1.0f);
+    draw_color_quad(&test_context, &color);
+    check_texture_sub_resource_color(test_context.backbuffer, 0, &r1, 0xff7f4c33, 1);
+    check_texture_sub_resource_color(test_context.backbuffer, 0, &r2, 0xffbc957c, 1);
+
+    ID3D10RenderTargetView_Release(rtv_srgb);
+    ID3D10RenderTargetView_Release(rtv_rgb);
+done:
     release_test_context(&test_context);
 }
 
 static void test_swapchain_flip(void)
 {
     ID3D10Texture2D *backbuffer_0, *backbuffer_1, *backbuffer_2, *offscreen;
+    ID3D10RenderTargetView *backbuffer_0_rtv, *backbuffer_0_rtv_srgb;
+    ID3D10RenderTargetView *backbuffer_1_rtv_srgb, *offscreen_rtv;
     ID3D10ShaderResourceView *backbuffer_0_srv, *backbuffer_1_srv;
-    ID3D10RenderTargetView *backbuffer_0_rtv, *offscreen_rtv;
+    D3D10_RENDER_TARGET_VIEW_DESC rtv_desc;
     unsigned int color, stride, offset;
     D3D10_TEXTURE2D_DESC texture_desc;
     ID3D10InputLayout *input_layout;
@@ -11137,6 +11173,7 @@ static void test_swapchain_flip(void)
     static const float red[] = {1.0f, 0.0f, 0.0f, 0.5f};
     static const float green[] = {0.0f, 1.0f, 0.0f, 0.5f};
     static const float blue[] = {0.0f, 0.0f, 1.0f, 0.5f};
+    static const float grey[] = {0.5, 0.5f, 0.5f, 0.5f};
     struct swapchain_desc desc;
 
     if (!(device = create_device()))
@@ -11225,6 +11262,21 @@ static void test_swapchain_flip(void)
     ok(SUCCEEDED(hr), "Failed to create pixel shader, hr %#lx.\n", hr);
     ID3D10Device_PSSetShader(device, ps);
 
+    /* Test SRGB rtv for UNORM swapchain common for Unity games for Win10 */
+    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    rtv_desc.ViewDimension = D3D10_RTV_DIMENSION_TEXTURE2D;
+    rtv_desc.Texture2D.MipSlice = 0;
+    hr = ID3D10Device_CreateRenderTargetView(device, (ID3D10Resource *)backbuffer_0, &rtv_desc,
+            &backbuffer_0_rtv_srgb);
+    ok(hr == S_OK || broken(hr == E_INVALIDARG), "Failed to create render target view, hr %#lx.\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ID3D10Device_ClearRenderTargetView(device, backbuffer_0_rtv_srgb, grey);
+        color = get_texture_color(backbuffer_0, 320, 240); /* grey */
+        ok(compare_color(color, 0x80bcbcbc, 1), "Got unexpected srgb color 0x%08x.\n", color);
+        ID3D10RenderTargetView_Release(backbuffer_0_rtv_srgb);
+    }
+
     ID3D10Device_ClearRenderTargetView(device, backbuffer_0_rtv, red);
 
     ID3D10Device_Draw(device, 4, 0);
@@ -11241,6 +11293,17 @@ static void test_swapchain_flip(void)
      * rendering finishes before the vsync interval is over. I haven't found any productive use
      * for more than one buffer. */
     IDXGISwapChain_Present(swapchain, 0, 0);
+
+    hr = ID3D10Device_CreateRenderTargetView(device, (ID3D10Resource *)backbuffer_0, &rtv_desc,
+            &backbuffer_1_rtv_srgb);
+    ok(hr == S_OK || broken(hr == E_INVALIDARG), "Failed to create render target view, hr %#lx.\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ID3D10Device_ClearRenderTargetView(device, backbuffer_1_rtv_srgb, grey);
+        color = get_texture_color(backbuffer_0, 320, 240); /* grey */
+        todo_wine ok(compare_color(color, 0x80bcbcbc, 1), "Got unexpected srgb color 0x%08x.\n", color);
+        ID3D10RenderTargetView_Release(backbuffer_1_rtv_srgb);
+    }
 
     ID3D10Device_ClearRenderTargetView(device, backbuffer_0_rtv, green);
 
@@ -18157,8 +18220,6 @@ static void test_multisample_resolve(void)
 
         const struct vec4 *color;
         DWORD expected_color;
-
-        BOOL todo;
     }
     tests[] =
     {
@@ -18259,12 +18320,12 @@ static void test_multisample_resolve(void)
          DXGI_FORMAT_R8G8B8A8_TYPELESS,
          DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
          DXGI_FORMAT_R8G8B8A8_UNORM,
-         &green, 0xffbcffbc, TRUE},
+         &green, 0xffbcffbc},
         {DXGI_FORMAT_R8G8B8A8_TYPELESS,
          DXGI_FORMAT_R8G8B8A8_TYPELESS,
          DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
          DXGI_FORMAT_R8G8B8A8_UNORM,
-         &color, 0xffe2cdc0, TRUE},
+         &color, 0xffe2cdc0},
     };
 
     if (!init_test_context(&test_context))
@@ -18307,7 +18368,7 @@ static void test_multisample_resolve(void)
 
         /* Found broken on AMD Radeon HD 6310 */
         if (!broken(is_amd_device(device) && tests[i].format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB))
-            todo_wine_if(tests[i].todo && !damavand) check_texture_color(texture, tests[i].expected_color, 2);
+            check_texture_color(texture, tests[i].expected_color, 2);
 
         ID3D10RenderTargetView_Release(rtv);
         ID3D10Texture2D_Release(ms_texture);

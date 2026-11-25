@@ -25,7 +25,6 @@
 #include <setjmp.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
@@ -38,6 +37,15 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(seh);
 WINE_DECLARE_DEBUG_CHANNEL(relay);
+
+struct xcontext
+{
+    ARM64EC_NT_CONTEXT c;
+    CONTEXT_EX c_ex;
+    char xs[sizeof(XSTATE) + 64];
+};
+
+C_ASSERT( sizeof(struct xcontext) == 0x670 );
 
 /* xtajit64.dll functions */
 static void     (WINAPI *pBTCpu64FlushInstructionCache)(const void*,SIZE_T);
@@ -58,7 +66,9 @@ static NTSTATUS (WINAPI *pThreadInit)(void);
 static void     (WINAPI *pThreadTerm)(HANDLE,LONG);
 static void     (WINAPI *pUpdateProcessorInformation)(SYSTEM_CPU_INFORMATION*);
 
-static BOOLEAN emulated_processor_features[PROCESSOR_FEATURE_MAX];
+/* store full xstate before the config is fully initialized */
+static BOOLEAN emulated_processor_features[PROCESSOR_FEATURE_MAX] = { [PF_AVX_INSTRUCTIONS_AVAILABLE] = TRUE };
+
 static BYTE KiUserExceptionDispatcher_orig[16]; /* to detect patching */
 extern void KiUserExceptionDispatcher_thunk(void) asm("EXP+#KiUserExceptionDispatcher");
 
@@ -84,7 +94,16 @@ static inline BOOL enter_syscall_callback(void)
 
 static inline void leave_syscall_callback(void)
 {
-    get_arm64ec_cpu_area()->InSyscallCallback = 0;
+    CHPE_V2_CPU_AREA_INFO *cpu_area = get_arm64ec_cpu_area();
+    CONTEXT ctx;
+
+    cpu_area->InSyscallCallback = 0;
+
+    if (!cpu_area->InSimulation && cpu_area->SuspendDoorbell && *cpu_area->SuspendDoorbell)
+    {
+        RtlCaptureContext( &ctx );
+        if (*cpu_area->SuspendDoorbell) NtContinue( &ctx, FALSE );
+    }
 }
 
 /**********************************************************************
@@ -219,6 +238,7 @@ NTSTATUS arm64ec_process_init( HMODULE module )
     {
         for (unsigned int i = 0; i < PROCESSOR_FEATURE_MAX; i++)
             emulated_processor_features[i] = pBTCpu64IsProcessorFeaturePresent( i );
+
         status = create_cross_process_work_list( info );
     }
     if (!status && pThreadInit) status = pThreadInit();
@@ -347,6 +367,7 @@ DEFINE_SYSCALL(NtAccessCheckByTypeAndAuditAlarm, (UNICODE_STRING *subsystem, HAN
 DEFINE_SYSCALL(NtAddAtom, (const WCHAR *name, ULONG length, RTL_ATOM *atom))
 DEFINE_SYSCALL(NtAdjustGroupsToken, (HANDLE token, BOOLEAN reset, TOKEN_GROUPS *groups, ULONG length, TOKEN_GROUPS *prev, ULONG *retlen))
 DEFINE_SYSCALL(NtAdjustPrivilegesToken, (HANDLE token, BOOLEAN disable, TOKEN_PRIVILEGES *privs, DWORD length, TOKEN_PRIVILEGES *prev, DWORD *retlen))
+DEFINE_SYSCALL(NtAlertMultipleThreadByThreadId, (HANDLE *tids, ULONG count, void *unk1, void *unk2))
 DEFINE_SYSCALL(NtAlertResumeThread, (HANDLE handle, ULONG *count))
 DEFINE_SYSCALL(NtAlertThread, (HANDLE handle))
 DEFINE_SYSCALL(NtAlertThreadByThreadId, (HANDLE tid))
@@ -355,6 +376,12 @@ DEFINE_SYSCALL(NtAllocateReserveObject, (HANDLE *handle, const OBJECT_ATTRIBUTES
 DEFINE_SYSCALL(NtAllocateUuids, (ULARGE_INTEGER *time, ULONG *delta, ULONG *sequence, UCHAR *seed))
 DEFINE_WRAPPED_SYSCALL(NtAllocateVirtualMemory, (HANDLE process, PVOID *ret, ULONG_PTR zero_bits, SIZE_T *size_ptr, ULONG type, ULONG protect))
 DEFINE_WRAPPED_SYSCALL(NtAllocateVirtualMemoryEx, (HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type, ULONG protect, MEM_EXTENDED_PARAMETER *parameters, ULONG count))
+DEFINE_SYSCALL(NtAlpcAcceptConnectPort, (HANDLE *communication_port, HANDLE connection_port, DWORD flags, OBJECT_ATTRIBUTES *obj_attr, ALPC_PORT_ATTRIBUTES *port_attr, void *port_context, ALPC_PORT_MESSAGE *send_msg, ALPC_MESSAGE_ATTRIBUTES *send_msg_attr, BOOLEAN accept))
+DEFINE_SYSCALL(NtAlpcConnectPort, (HANDLE *port_handle, UNICODE_STRING *port_name, OBJECT_ATTRIBUTES *obj_attr, ALPC_PORT_ATTRIBUTES *port_attr, DWORD flags, PSID required_server_sid, ALPC_PORT_MESSAGE *connect_msg, SIZE_T *connect_msg_size, ALPC_MESSAGE_ATTRIBUTES *send_msg_attr, ALPC_MESSAGE_ATTRIBUTES *recv_msg_attr, LARGE_INTEGER *timeout))
+DEFINE_SYSCALL(NtAlpcCreatePort, (HANDLE *port_handle, OBJECT_ATTRIBUTES *obj_attr, ALPC_PORT_ATTRIBUTES *port_attr))
+DEFINE_SYSCALL(NtAlpcDisconnectPort, (HANDLE port_handle, ULONG flags))
+DEFINE_SYSCALL(NtAlpcImpersonateClientOfPort, (HANDLE port_handle, ALPC_PORT_MESSAGE *msg, void *reserved ))
+DEFINE_SYSCALL(NtAlpcSendWaitReceivePort, (HANDLE port_handle, DWORD flags, ALPC_PORT_MESSAGE *send_msg, ALPC_MESSAGE_ATTRIBUTES *send_msg_attr, ALPC_PORT_MESSAGE *recv_msg, SIZE_T *recv_buffer_size, ALPC_MESSAGE_ATTRIBUTES *recv_msg_attr, LARGE_INTEGER *timeout))
 DEFINE_SYSCALL(NtApphelpCacheControl, (ULONG class, void *context))
 DEFINE_SYSCALL(NtAreMappedFilesTheSame, (PVOID addr1, PVOID addr2))
 DEFINE_SYSCALL(NtAssignProcessToJobObject, (HANDLE job, HANDLE process))
@@ -420,7 +447,7 @@ DEFINE_SYSCALL(NtFlushBuffersFileEx, (HANDLE handle, ULONG flags, void *params, 
 DEFINE_WRAPPED_SYSCALL(NtFlushInstructionCache, (HANDLE handle, const void *addr, SIZE_T size))
 DEFINE_SYSCALL(NtFlushKey, (HANDLE key))
 DEFINE_SYSCALL(NtFlushProcessWriteBuffers, (void))
-DEFINE_SYSCALL(NtFlushVirtualMemory, (HANDLE process, LPCVOID *addr_ptr, SIZE_T *size_ptr, ULONG unknown))
+DEFINE_SYSCALL(NtFlushVirtualMemory, (HANDLE process, LPCVOID *addr_ptr, SIZE_T *size_ptr, IO_STATUS_BLOCK *io))
 DEFINE_WRAPPED_SYSCALL(NtFreeVirtualMemory, (HANDLE process, PVOID *addr_ptr, SIZE_T *size_ptr, ULONG type))
 DEFINE_SYSCALL(NtFsControlFile, (HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_context, IO_STATUS_BLOCK *io, ULONG code, void *in_buffer, ULONG in_size, void *out_buffer, ULONG out_size))
 DEFINE_WRAPPED_SYSCALL(NtGetContextThread, (HANDLE handle, ARM64_NT_CONTEXT *context))
@@ -460,6 +487,7 @@ DEFINE_SYSCALL(NtOpenKeyTransacted, (HANDLE *key, ACCESS_MASK access, const OBJE
 DEFINE_SYSCALL(NtOpenKeyTransactedEx, (HANDLE *key, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, ULONG options, HANDLE transaction))
 DEFINE_SYSCALL(NtOpenKeyedEvent, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr))
 DEFINE_SYSCALL(NtOpenMutant, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr))
+DEFINE_SYSCALL(NtOpenPrivateNamespace, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, const OBJECT_BOUNDARY_DESCRIPTOR *boundary_descriptor))
 DEFINE_SYSCALL(NtOpenProcess, (HANDLE *handle, ACCESS_MASK access, const OBJECT_ATTRIBUTES *attr, const CLIENT_ID *id))
 DEFINE_SYSCALL(NtOpenProcessToken, (HANDLE process, DWORD access, HANDLE *handle))
 DEFINE_SYSCALL(NtOpenProcessTokenEx, (HANDLE process, DWORD access, DWORD attributes, HANDLE *handle))
@@ -522,7 +550,7 @@ DEFINE_SYSCALL(NtReadVirtualMemory, (HANDLE process, const void *addr, void *buf
 DEFINE_SYSCALL(NtRegisterThreadTerminatePort, (HANDLE handle))
 DEFINE_SYSCALL(NtReleaseKeyedEvent, (HANDLE handle, const void *key, BOOLEAN alertable, const LARGE_INTEGER *timeout))
 DEFINE_SYSCALL(NtReleaseMutant, (HANDLE handle, LONG *prev_count))
-DEFINE_SYSCALL(NtReleaseSemaphore, (HANDLE handle, ULONG count, ULONG *previous))
+DEFINE_SYSCALL(NtReleaseSemaphore, (HANDLE handle, LONG count, ULONG *previous))
 DEFINE_SYSCALL(NtRemoveIoCompletion, (HANDLE handle, ULONG_PTR *key, ULONG_PTR *value, IO_STATUS_BLOCK *io, LARGE_INTEGER *timeout))
 DEFINE_SYSCALL(NtRemoveIoCompletionEx, (HANDLE handle, FILE_IO_COMPLETION_INFORMATION *info, ULONG count, ULONG *written, LARGE_INTEGER *timeout, BOOLEAN alertable))
 DEFINE_SYSCALL(NtRemoveProcessDebug, (HANDLE process, HANDLE debug))
@@ -559,7 +587,7 @@ DEFINE_SYSCALL(NtSetInformationVirtualMemory, (HANDLE process, VIRTUAL_MEMORY_IN
 DEFINE_SYSCALL(NtSetIntervalProfile, (ULONG interval, KPROFILE_SOURCE source))
 DEFINE_SYSCALL(NtSetIoCompletion, (HANDLE handle, ULONG_PTR key, ULONG_PTR value, NTSTATUS status, SIZE_T count))
 DEFINE_SYSCALL(NtSetIoCompletionEx, (HANDLE completion_handle, HANDLE completion_reserve_handle, ULONG_PTR key, ULONG_PTR value, NTSTATUS status, SIZE_T count))
-DEFINE_SYSCALL(NtSetLdtEntries, (ULONG sel1, LDT_ENTRY entry1, ULONG sel2, LDT_ENTRY entry2))
+DEFINE_SYSCALL(NtSetLdtEntries, (ULONG sel1, ULONG entry1_low, ULONG entry1_high, ULONG sel2, ULONG entry2_low, ULONG entry2_high))
 DEFINE_SYSCALL(NtSetSecurityObject, (HANDLE handle, SECURITY_INFORMATION info, PSECURITY_DESCRIPTOR descr))
 DEFINE_SYSCALL(NtSetSystemInformation, (SYSTEM_INFORMATION_CLASS class, void *info, ULONG length))
 DEFINE_SYSCALL(NtSetSystemTime, (const LARGE_INTEGER *new, LARGE_INTEGER *old))
@@ -651,16 +679,18 @@ NTSTATUS SYSCALL_API NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE
 NTSTATUS SYSCALL_API NtContinue( CONTEXT *context, BOOLEAN alertable )
 {
     ARM64_NT_CONTEXT arm_ctx;
+    NTSTATUS status;
 
-    context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
+    if ((status = context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context ))) return status;
     return syscall_NtContinue( &arm_ctx, alertable );
 }
 
 NTSTATUS SYSCALL_API NtContinueEx( CONTEXT *context, KCONTINUE_ARGUMENT *args )
 {
     ARM64_NT_CONTEXT arm_ctx;
+    NTSTATUS status;
 
-    context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
+    if ((status = context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context ))) return status;
     return syscall_NtContinueEx( &arm_ctx, args );
 }
 
@@ -704,9 +734,25 @@ NTSTATUS SYSCALL_API NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_
 NTSTATUS SYSCALL_API NtGetContextThread( HANDLE handle, CONTEXT *context )
 {
     ARM64_NT_CONTEXT arm_ctx = { .ContextFlags = ctx_flags_x64_to_arm( context->ContextFlags ) };
-    NTSTATUS status = syscall_NtGetContextThread( handle, &arm_ctx );
+    NTSTATUS status;
 
-    if (!status) context_arm_to_x64( (ARM64EC_NT_CONTEXT *)context, &arm_ctx );
+    if ((context->ContextFlags & CONTEXT_AMD64_XSTATE) == CONTEXT_AMD64_XSTATE)
+    {
+        CONTEXT_EX *context_ex = (CONTEXT_EX *)(context + 1);
+        XSTATE *xstate = (XSTATE *)((char *)context_ex + context_ex->XState.Offset);
+
+        if (context_ex->XState.Length < sizeof(XSAVE_AREA_HEADER) || context_ex->XState.Length > sizeof(*xstate))
+            return STATUS_INVALID_PARAMETER;
+
+        xstate->Mask &= XSTATE_MASK_AVX & RtlGetEnabledExtendedFeatures( XSTATE_MASK_AVX );
+        xstate->CompactionMask = 0;
+        if ((xstate->Mask & XSTATE_MASK_AVX) && context_ex->XState.Length < sizeof(*xstate))
+            return STATUS_BUFFER_OVERFLOW;
+    }
+
+    status = syscall_NtGetContextThread( handle, &arm_ctx );
+    if (!status) context_arm_to_x64( (ARM64EC_NT_CONTEXT *)context, &arm_ctx,
+                                     ctx_flags_arm_to_x64( arm_ctx.ContextFlags ) | (context->ContextFlags & CONTEXT_AMD64_XSTATE));
     return status;
 }
 
@@ -790,8 +836,9 @@ NTSTATUS SYSCALL_API NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class, v
 NTSTATUS SYSCALL_API NtRaiseException( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL first_chance )
 {
     ARM64_NT_CONTEXT arm_ctx;
+    NTSTATUS status;
 
-    context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
+    if ((status = context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context ))) return status;
     return syscall_NtRaiseException( rec, &arm_ctx, first_chance );
 }
 
@@ -804,19 +851,23 @@ NTSTATUS SYSCALL_API NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
     if (pBTCpu64NotifyReadFile && enter_syscall_callback())
     {
         pBTCpu64NotifyReadFile( handle, buffer, length, FALSE, 0 );
-        status = syscall_NtReadFile( handle, event, apc, apc_user, io, buffer, length, offset, key );
-        if (pBTCpu64NotifyReadFile) pBTCpu64NotifyReadFile( handle, buffer, length, TRUE, status );
         leave_syscall_callback();
-        return status;
     }
-    return syscall_NtReadFile( handle, event, apc, apc_user, io, buffer, length, offset, key );
+    status = syscall_NtReadFile( handle, event, apc, apc_user, io, buffer, length, offset, key );
+    if (pBTCpu64NotifyReadFile && enter_syscall_callback())
+    {
+        pBTCpu64NotifyReadFile( handle, buffer, length, TRUE, status );
+        leave_syscall_callback();
+    }
+    return status;
 }
 
 NTSTATUS SYSCALL_API NtSetContextThread( HANDLE handle, const CONTEXT *context )
 {
     ARM64_NT_CONTEXT arm_ctx;
+    NTSTATUS status;
 
-    context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context );
+    if ((status = context_x64_to_arm( &arm_ctx, (ARM64EC_NT_CONTEXT *)context ))) return status;
     return syscall_NtSetContextThread( handle, &arm_ctx );
 }
 
@@ -1240,13 +1291,33 @@ NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_context )
 }
 
 
+static void init_xcontext( struct xcontext *ctx, ARM64_NT_CONTEXT *arm_ctx )
+{
+    XSTATE *xs = (XSTATE *)(((ULONG_PTR)ctx->xs + 63) & ~63ull);
+
+    ctx->c_ex.Legacy.Length = sizeof(CONTEXT);
+    ctx->c_ex.Legacy.Offset = -(LONG)sizeof(CONTEXT);
+    ctx->c_ex.XState.Length = sizeof(*xs);
+    ctx->c_ex.XState.Offset = (char *)xs - (char *)&ctx->c_ex;
+    ctx->c_ex.All.Offset = ctx->c_ex.Legacy.Offset;
+    ctx->c_ex.All.Length = sizeof(CONTEXT) + ctx->c_ex.XState.Offset + ctx->c_ex.XState.Length;
+
+    xs->Mask = XSTATE_MASK_AVX & RtlGetEnabledExtendedFeatures( XSTATE_MASK_AVX );
+    xs->CompactionMask = 0;
+    memset( xs->Reserved, 0, sizeof(xs->Reserved) );
+
+    context_arm_to_x64( &ctx->c, arm_ctx, CONTEXT_AMD64_FULL | CONTEXT_AMD64_XSTATE );
+}
+
+
 /*******************************************************************
  *		KiUserEmulationDispatcher (NTDLL.@)
  */
 void dispatch_emulation( ARM64_NT_CONTEXT *arm_ctx )
 {
-    context_arm_to_x64( get_arm64ec_cpu_area()->ContextAmd64, arm_ctx );
-    get_arm64ec_cpu_area()->InSimulation = 1;
+    struct xcontext *context = (void *)get_arm64ec_cpu_area()->ContextAmd64;
+
+    init_xcontext( context, arm_ctx );
     pBeginSimulation();
 }
 __ASM_GLOBAL_FUNC( "#KiUserEmulationDispatcher",
@@ -1271,15 +1342,16 @@ static void dispatch_syscall( ARM64_NT_CONTEXT *context )
     else context->X8 = STATUS_INVALID_SYSTEM_SERVICE;  /* set return value in rax */
 
     /* return to x64 code so that the syscall entry thunk is invoked properly */
+    get_arm64ec_cpu_area()->InSimulation = 1;
     dispatch_emulation( context );
 }
 
 
-static void * __attribute__((used)) prepare_exception_arm64ec( EXCEPTION_RECORD *rec, ARM64EC_NT_CONTEXT *context, ARM64_NT_CONTEXT *arm_ctx )
+static void * __attribute__((used)) prepare_exception_arm64ec( EXCEPTION_RECORD *rec, struct xcontext *context, ARM64_NT_CONTEXT *arm_ctx )
 {
     if (rec->ExceptionCode == STATUS_EMULATION_SYSCALL) dispatch_syscall( arm_ctx );
-    context_arm_to_x64( context, arm_ctx );
-    if (pResetToConsistentState) pResetToConsistentState( rec, &context->AMD64_Context, arm_ctx );
+    init_xcontext( context, arm_ctx );
+    if (pResetToConsistentState) pResetToConsistentState( rec, &context->c.AMD64_Context, arm_ctx );
     /* call x64 dispatcher if the thunk or the function pointer was modified */
     if (pWow64PrepareForException || memcmp( KiUserExceptionDispatcher_thunk, KiUserExceptionDispatcher_orig,
                                              sizeof(KiUserExceptionDispatcher_orig) ))
@@ -1294,12 +1366,12 @@ void __attribute__((naked)) KiUserExceptionDispatcher( EXCEPTION_RECORD *rec, CO
 {
     asm( ".seh_proc \"#KiUserExceptionDispatcher\"\n\t"
          ".seh_context\n\t"
-         "sub sp, sp, #0x4d0\n\t"       /* sizeof(ARM64EC_NT_CONTEXT) */
-         ".seh_stackalloc 0x4d0\n\t"
+         "sub sp, sp, #0x670\n\t"       /* sizeof(xcontext) */
+         ".seh_stackalloc 0x670\n\t"
          ".seh_endprologue\n\t"
-         "add x0, sp, #0x3b0+0x4d0\n\t" /* rec */
+         "add x0, sp, #0x3b0+0x670\n\t" /* rec */
          "mov x1, sp\n\t"               /* context */
-         "add x2, sp, #0x4d0\n\t"       /* arm_ctx (context + 1) */
+         "add x2, sp, #0x670\n\t"       /* arm_ctx (context + 1) */
          "bl \"#prepare_exception_arm64ec\"\n\t"
          "cbz x0, 1f\n\t"
          /* bypass exit thunk to avoid messing up the stack */
@@ -1307,7 +1379,7 @@ void __attribute__((naked)) KiUserExceptionDispatcher( EXCEPTION_RECORD *rec, CO
          "ldr x16, [x16, #:lo12:__os_arm64x_dispatch_call_no_redirect]\n\t"
          "mov x9, x0\n\t"
          "blr x16\n"
-         "1:\tadd x0, sp, #0x3b0+0x4d0\n\t" /* rec */
+         "1:\tadd x0, sp, #0x3b0+0x670\n\t" /* rec */
          "mov x1, sp\n\t"                   /* context */
          "bl #dispatch_exception\n\t"
          "brk #1\n\t"
@@ -1322,11 +1394,11 @@ static void __attribute__((used)) dispatch_apc( void (CALLBACK *func)(ULONG_PTR,
                                                 ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
                                                 BOOLEAN alertable, ARM64_NT_CONTEXT *arm_ctx )
 {
-    ARM64EC_NT_CONTEXT context;
+    struct xcontext context;
 
-    context_arm_to_x64( &context, arm_ctx );
-    func( arg1, arg2, arg3, &context.AMD64_Context );
-    NtContinue( &context.AMD64_Context, alertable );
+    init_xcontext( &context, arm_ctx );
+    func( arg1, arg2, arg3, &context.c.AMD64_Context );
+    NtContinue( &context.c.AMD64_Context, alertable );
 }
 __ASM_GLOBAL_FUNC( "#KiUserApcDispatcher",
                    ".seh_context\n\t"
@@ -1389,22 +1461,25 @@ static void unwind_one_frame( CONTEXT *context )
     RtlVirtualUnwind( UNW_FLAG_NHANDLER, base, pc, func, context, &data, &frame, NULL );
 }
 
+static void __attribute__((used)) unwind_entry_thunk( CONTEXT *context )
+{
+    CONTEXT unwind_context = *context;
+    unwind_one_frame( &unwind_context );
+    /* if the caller is emulated, we're in an entry thunk, so use the caller's context instead */
+    if (!RtlIsEcCode( unwind_context.Rip ))
+        memcpy( &context->Rax, &unwind_context.Rax, offsetof(CONTEXT,FltSave) - offsetof(CONTEXT,Rax) );
+}
+
 /* capture context information; helper for RtlCaptureContext */
 static void __attribute__((used)) capture_context( CONTEXT *context, UINT cpsr, UINT fpcr, UINT fpsr )
 {
-    CONTEXT unwind_context;
-
     context->ContextFlags = CONTEXT_AMD64_FULL;
     context->EFlags = cpsr_to_eflags( cpsr );
     context->MxCsr = fpcsr_to_mxcsr( fpcr, fpsr );
     context->FltSave.ControlWord = 0x27f;
     context->FltSave.StatusWord = 0;
     context->FltSave.MxCsr = context->MxCsr;
-
-    /* unwind one level to get register values from caller function */
-    unwind_context = *context;
-    unwind_one_frame( &unwind_context );
-    memcpy( &context->Rax, &unwind_context.Rax, offsetof(CONTEXT,FltSave) - offsetof(CONTEXT,Rax) );
+    unwind_entry_thunk( context );
 }
 
 /***********************************************************************
@@ -1458,7 +1533,7 @@ void __attribute__((naked)) RtlCaptureContext( CONTEXT *context )
 /* fixup jump buffer information; helper for _setjmpex */
 static int __attribute__((used)) do_setjmpex( _JUMP_BUFFER *buf, UINT fpcr, UINT fpsr )
 {
-    CONTEXT context = { .ContextFlags = CONTEXT_FULL };
+    CONTEXT context = { .ContextFlags = CONTEXT_AMD64_FULL };
 
     buf->MxCsr = fpcsr_to_mxcsr( fpcr, fpsr );
     buf->FpCsr = 0x27f;
@@ -1543,6 +1618,9 @@ static void __attribute__((naked,noreturn)) consolidate_callback( CONTEXT *conte
          "stp x6, x7, [x4], #16\n\t"
          "subs x5, x5, #1\n\t"
          "b.ne 1b\n\t"
+         "ldr w5, [sp, #0x30]\n\t"  /* ContextFlags */
+         "and w5, w5, #~0x40\n\t"
+         "str w5, [sp, #0x30]\n\t"
          "mov x0, x2\n\t"           /* rec */
          "b invoke_callback\n\t"
          ".seh_endproc\n\t"
@@ -1786,7 +1864,22 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
         (1ull << PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE) |
         (1ull << PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) |
         (1ull << PF_ARM_V83_JSCVT_INSTRUCTIONS_AVAILABLE) |
-        (1ull << PF_ARM_V83_LRCPC_INSTRUCTIONS_AVAILABLE);
+        (1ull << PF_ARM_V83_LRCPC_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE2_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE2_1_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_AES_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_PMULL128_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_BITPERM_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_BF16_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_EBF16_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_B16B16_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_SHA3_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_SM4_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_F32MM_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_SVE_F64MM_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_LSE2_AVAILABLE);
 
     if (feature >= PROCESSOR_FEATURE_MAX) return FALSE;
     if (arm64_features & (1ull << feature)) return user_shared_data->ProcessorFeatures[feature];
@@ -2007,13 +2100,21 @@ void __attribute((naked)) RtlRaiseException( EXCEPTION_RECORD *rec )
          ".seh_endprologue\n\t"
          "add x0, sp, #0x20\n\t"
          "bl \"#RtlCaptureContext\"\n\t"
-         "add x1, sp, #0x20\n\t"       /* context pointer */
+         "add x0, sp, #0x20\n\t"       /* context pointer */
+         "add x1, x0, #0x4d0\n\t"      /* orig stack pointer */
+         "str x1, [x0, #0x98]\n\t"     /* context->Rsp */
+         "ldr x1, [sp, #0x10]\n\t"     /* rec */
+         "str x1, [x0, #0x80]\n\t"     /* context->Rcx */
+         "ldr x1, [sp, #0x08]\n\t"     /* return address */
+         "str x1, [x0, #0xf8]\n\t"     /* context->Rip */
+         "ldr w1, [x0, #0x30]\n\t"     /* context->ContextFlags */
+         "orr w1, w1, #0x20000000\n\t" /* CONTEXT_UNWOUND_TO_CALL */
+         "str w1, [x0, #0x30]\n\t"
+         "bl \"#unwind_entry_thunk\"\n\t"
          "ldr x0, [sp, #0x10]\n\t"     /* rec */
-         "ldr x2, [x1, #0xf8]\n\t"     /* context->Rip */
+         "add x1, sp, #0x20\n\t"       /* context pointer */
+         "ldr x2, [x1, #0xf8]\n\t"     /* ctx->Rip */
          "str x2, [x0, #0x10]\n\t"     /* rec->ExceptionAddress */
-         "ldr w2, [x1, #0x30]\n\t"     /* context->ContextFlags */
-         "orr w2, w2, #0x20000000\n\t" /* CONTEXT_UNWOUND_TO_CALL */
-         "str w2, [x1, #0x30]\n\t"
          "ldr x3, [x18, #0x60]\n\t"    /* peb */
          "ldrb w2, [x3, #2]\n\t"       /* peb->BeingDebugged */
          "cbnz w2, 1f\n\t"
@@ -2074,7 +2175,7 @@ void __attribute__((naked)) RtlUserThreadStart( PRTL_THREAD_START_ROUTINE entry,
  */
 void WINAPI LdrInitializeThunk( CONTEXT *arm_context, ULONG_PTR unk2, ULONG_PTR unk3, ULONG_PTR unk4 )
 {
-    ARM64EC_NT_CONTEXT context;
+    struct xcontext context;
 
     if (!__os_arm64x_check_call)
     {
@@ -2085,10 +2186,10 @@ void WINAPI LdrInitializeThunk( CONTEXT *arm_context, ULONG_PTR unk2, ULONG_PTR 
         __os_arm64x_set_x64_information = LdrpSetX64Information;
     }
 
-    context_arm_to_x64( &context, (ARM64_NT_CONTEXT *)arm_context );
-    loader_init( &context.AMD64_Context, (void **)&context.X0 );
-    TRACE_(relay)( "\1Starting thread proc %p (arg=%p)\n", (void *)context.X0, (void *)context.X1 );
-    NtContinue( &context.AMD64_Context, TRUE );
+    init_xcontext( &context, (ARM64_NT_CONTEXT *)arm_context );
+    loader_init( &context.c.AMD64_Context, (void **)&context.c.X0 );
+    TRACE_(relay)( "\1Starting thread proc %p (arg=%p)\n", (void *)context.c.X0, (void *)context.c.X1 );
+    NtContinue( &context.c.AMD64_Context, TRUE );
 }
 
 
@@ -2101,9 +2202,9 @@ __ASM_GLOBAL_FUNC( "#process_breakpoint",
                    "brk #0xf000\n\t"
                    "ret\n"
                    "process_breakpoint_handler:\n\t"
-                   "ldr x4, [x2, #0x108]\n\t" /* context->Pc */
+                   "ldr x4, [x2, #0xf8]\n\t"  /* context->Rip */
                    "add x4, x4, #4\n\t"
-                   "str x4, [x2, #0x108]\n\t"
+                   "str x4, [x2, #0xf8]\n\t"
                    "mov w0, #0\n\t"           /* ExceptionContinueExecution */
                    "ret" )
 

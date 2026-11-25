@@ -498,7 +498,7 @@ static void fill_filename_from_selection(FileDialogImpl *This)
     if(FAILED(hr) || !item_count)
         return;
 
-    names = HeapAlloc(GetProcessHeap(), 0, item_count*sizeof(LPWSTR));
+    names = malloc(item_count*sizeof(LPWSTR));
 
     /* Get names of the selected items */
     valid_count = 0; len_total = 0;
@@ -532,7 +532,7 @@ static void fill_filename_from_selection(FileDialogImpl *This)
     }
     else if(valid_count > 1)
     {
-        LPWSTR string = HeapAlloc(GetProcessHeap(), 0, sizeof(WCHAR)*len_total);
+        LPWSTR string = malloc(sizeof(WCHAR)*len_total);
         LPWSTR cur_point = string;
 
         for(i = 0; i < valid_count; i++)
@@ -548,10 +548,10 @@ static void fill_filename_from_selection(FileDialogImpl *This)
         *(cur_point-1) = '\0';
 
         set_file_name(This, string);
-        HeapFree(GetProcessHeap(), 0, string);
+        free(string);
     }
 
-    HeapFree(GetProcessHeap(), 0, names);
+    free(names);
     return;
 }
 
@@ -622,13 +622,13 @@ static HRESULT on_default_action(FileDialogImpl *This)
     if(FAILED(hr))
     {
         ERR("Failed to get pidl for current directory.\n");
-        HeapFree(GetProcessHeap(), 0, files);
+        free(files);
         return hr;
     }
 
     TRACE("Acting on %d file(s).\n", file_count);
 
-    pidla = HeapAlloc(GetProcessHeap(), 0, sizeof(LPITEMIDLIST) * file_count);
+    pidla = malloc(sizeof(LPITEMIDLIST) * file_count);
     open_action = ONOPEN_OPEN;
     fn_iter = files;
 
@@ -794,11 +794,11 @@ static HRESULT on_default_action(FileDialogImpl *This)
     }
 
     /* Clean up */
-    HeapFree(GetProcessHeap(), 0, files);
+    free(files);
     ILFree(current_folder);
     for(i = 0; i < file_count; i++)
         ILFree(pidla[i]);
-    HeapFree(GetProcessHeap(), 0, pidla);
+    free(pidla);
 
     /* Success closes the dialog */
     return ret;
@@ -840,8 +840,8 @@ static void show_opendropdown(FileDialogImpl *This)
 static void item_free(cctrl_item *item)
 {
     DestroyWindow(item->hwnd);
-    HeapFree(GetProcessHeap(), 0, item->label);
-    HeapFree(GetProcessHeap(), 0, item);
+    free(item->label);
+    free(item);
 }
 
 static cctrl_item* get_item(customctrl* parent, DWORD itemid, CDCONTROLSTATEF visible_flags, DWORD* position)
@@ -886,13 +886,13 @@ static HRESULT add_item(customctrl* parent, DWORD itemid, LPCWSTR label, cctrl_i
     if (get_item(parent, itemid, 0, NULL))
         return E_INVALIDARG;
 
-    item = HeapAlloc(GetProcessHeap(), 0, sizeof(*item));
-    label_copy = HeapAlloc(GetProcessHeap(), 0, (lstrlenW(label)+1)*sizeof(WCHAR));
+    item = malloc(sizeof(*item));
+    label_copy = malloc((lstrlenW(label)+1)*sizeof(WCHAR));
 
     if (!item || !label_copy)
     {
-        HeapFree(GetProcessHeap(), 0, item);
-        HeapFree(GetProcessHeap(), 0, label_copy);
+        free(item);
+        free(label_copy);
         return E_OUTOFMEMORY;
     }
 
@@ -951,21 +951,20 @@ static inline customctrl *get_cctrl(FileDialogImpl *This, DWORD ctlid)
     return NULL;
 }
 
-static void ctrl_resize(HWND hctrl, UINT min_width, UINT max_width, BOOL multiline)
+static void ctrl_resize(HWND hctrl, UINT min_width, UINT max_width, BOOL multiline, BOOL box)
 {
     LPWSTR text;
     UINT len, final_width;
-    UINT lines, final_height;
+    UINT final_height;
     SIZE size;
     RECT rc;
     HDC hdc;
-    WCHAR *c;
     HFONT font;
 
     TRACE("\n");
 
     len = SendMessageW(hctrl, WM_GETTEXTLENGTH, 0, 0);
-    text = HeapAlloc(GetProcessHeap(), 0, sizeof(WCHAR)*(len+1));
+    text = malloc(sizeof(WCHAR)*(len+1));
     if(!text) return;
     SendMessageW(hctrl, WM_GETTEXT, len+1, (LPARAM)text);
 
@@ -973,16 +972,20 @@ static void ctrl_resize(HWND hctrl, UINT min_width, UINT max_width, BOOL multili
     font = (HFONT)SendMessageW(hctrl, WM_GETFONT, 0, 0);
     font = SelectObject(hdc, font);
     GetTextExtentPoint32W(hdc, text, lstrlenW(text), &size);
-    SelectObject(hdc, font);
-    ReleaseDC(hctrl, hdc);
+    final_width = min(max(size.cx, min_width) + 4, max_width);
 
     if(len && multiline)
     {
-        /* FIXME: line-wrap */
-        for(lines = 1, c = text; *c != '\0'; c++)
-            if(*c == '\n') lines++;
+        SetRect(&rc, 0, 0, final_width, 0);
+        /* Check boxes and radio buttons draw their text right of the box */
+        if(box)
+        {
+            INT char_width;
 
-        final_height = size.cy*lines + 2*4;
+            GetCharWidthW(hdc, '0', '0', &char_width);
+            rc.right -= 12 * GetDpiForWindow(hctrl) / USER_DEFAULT_SCREEN_DPI + 1 + char_width / 2;
+        }
+        final_height = DrawTextW(hdc, text, -1, &rc, DT_CALCRECT | DT_WORDBREAK) + 2*4;
     }
     else
     {
@@ -990,11 +993,12 @@ static void ctrl_resize(HWND hctrl, UINT min_width, UINT max_width, BOOL multili
         final_height = rc.bottom - rc.top;
     }
 
-    final_width = min(max(size.cx, min_width) + 4, max_width);
+    SelectObject(hdc, font);
+    ReleaseDC(hctrl, hdc);
     SetWindowPos(hctrl, NULL, 0, 0, final_width, final_height,
                  SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
 
-    HeapFree(GetProcessHeap(), 0, text);
+    free(text);
 }
 
 static UINT ctrl_get_height(customctrl *ctrl) {
@@ -1029,7 +1033,7 @@ static void ctrl_free(customctrl *ctrl)
     }
 
     DestroyWindow(ctrl->hwnd);
-    HeapFree(GetProcessHeap(), 0, ctrl);
+    free(ctrl);
 }
 
 static void customctrl_resize(FileDialogImpl *This, customctrl *ctrl)
@@ -1046,14 +1050,14 @@ static void customctrl_resize(FileDialogImpl *This, customctrl *ctrl)
     case IDLG_CCTRL_CHECKBUTTON:
     case IDLG_CCTRL_TEXT:
         size = MulDiv(160, This->dpi_x, USER_DEFAULT_SCREEN_DPI);
-        ctrl_resize(ctrl->hwnd, size, size, TRUE);
+        ctrl_resize(ctrl->hwnd, size, size, TRUE, ctrl->type == IDLG_CCTRL_CHECKBUTTON);
         GetWindowRect(ctrl->hwnd, &rc);
         SetWindowPos(ctrl->wrapper_hwnd, NULL, 0, 0, rc.right-rc.left, rc.bottom-rc.top,
                      SWP_NOZORDER|SWP_NOMOVE);
         break;
     case IDLG_CCTRL_VISUALGROUP:
         total_height = 0;
-        ctrl_resize(ctrl->hwnd, 0, This->cctrl_indent, TRUE);
+        ctrl_resize(ctrl->hwnd, 0, This->cctrl_indent, TRUE, FALSE);
 
         LIST_FOR_EACH_ENTRY(sub_ctrl, &ctrl->sub_cctrls, customctrl, sub_cctrls_entry)
         {
@@ -1073,6 +1077,7 @@ static void customctrl_resize(FileDialogImpl *This, customctrl *ctrl)
             height = rc.bottom - rc.top;
 
             SetWindowPos(ctrl->hwnd, NULL, This->cctrl_indent - width, 0, width, height, SWP_NOZORDER);
+            total_height = max(total_height, height);
         }
 
         /* Resize the wrapper window to fit all the sub controls */
@@ -1089,7 +1094,7 @@ static void customctrl_resize(FileDialogImpl *This, customctrl *ctrl)
         LIST_FOR_EACH_ENTRY(item, &ctrl->sub_items, cctrl_item, entry)
         {
             size = MulDiv(160, This->dpi_x, USER_DEFAULT_SCREEN_DPI);
-            ctrl_resize(item->hwnd, size, size, TRUE);
+            ctrl_resize(item->hwnd, size, size, TRUE, TRUE);
             SetWindowPos(item->hwnd, NULL, 0, total_height, 0, 0,
                          SWP_NOZORDER|SWP_NOSIZE);
 
@@ -1267,7 +1272,7 @@ static HRESULT cctrl_create_new(FileDialogImpl *This, DWORD id,
 
     SetPropW(ns_hwnd, L"nfs_child", control_hwnd);
 
-    ctrl = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(customctrl));
+    ctrl = calloc(1, sizeof(customctrl));
     if(!ctrl)
         return E_OUTOFMEMORY;
 
@@ -2060,21 +2065,21 @@ static void update_control_text(FileDialogImpl *This)
        (hitem = GetDlgItem(This->dlg_hwnd, IDOK)))
     {
         SetWindowTextW(hitem, custom_okbutton);
-        ctrl_resize(hitem, min_width, max_width, FALSE);
+        ctrl_resize(hitem, min_width, max_width, FALSE, FALSE);
     }
 
     if(This->custom_cancelbutton &&
        (hitem = GetDlgItem(This->dlg_hwnd, IDCANCEL)))
     {
         SetWindowTextW(hitem, This->custom_cancelbutton);
-        ctrl_resize(hitem, min_width, max_width, FALSE);
+        ctrl_resize(hitem, min_width, max_width, FALSE, FALSE);
     }
 
     if(This->custom_filenamelabel &&
        (hitem = GetDlgItem(This->dlg_hwnd, IDC_FILENAMESTATIC)))
     {
         SetWindowTextW(hitem, This->custom_filenamelabel);
-        ctrl_resize(hitem, min_width, max_width, FALSE);
+        ctrl_resize(hitem, min_width, max_width, FALSE, FALSE);
     }
 }
 
@@ -2420,6 +2425,7 @@ static HRESULT WINAPI IFileDialog2_fnQueryInterface(IFileDialog2 *iface,
 
     *ppvObject = NULL;
     if(IsEqualGUID(riid, &IID_IUnknown) ||
+       IsEqualGUID(riid, &IID_IModalWindow) ||
        IsEqualGUID(riid, &IID_IFileDialog) ||
        IsEqualGUID(riid, &IID_IFileDialog2))
     {
@@ -2491,7 +2497,7 @@ static ULONG WINAPI IFileDialog2_fnRelease(IFileDialog2 *iface)
             LocalFree((void*)This->filterspecs[i].pszName);
             LocalFree((void*)This->filterspecs[i].pszSpec);
         }
-        HeapFree(GetProcessHeap(), 0, This->filterspecs);
+        free(This->filterspecs);
 
         DestroyWindow(This->cctrls_hwnd);
 
@@ -2512,7 +2518,7 @@ static ULONG WINAPI IFileDialog2_fnRelease(IFileDialog2 *iface)
         DestroyMenu(This->hmenu_opendropdown);
         DeleteObject(This->hfont_opendropdown);
 
-        HeapFree(GetProcessHeap(), 0, This);
+        free(This);
     }
 
     return ref;
@@ -2544,7 +2550,7 @@ static HRESULT WINAPI IFileDialog2_fnSetFileTypes(IFileDialog2 *iface, UINT cFil
     if(!cFileTypes)
         return S_OK;
 
-    This->filterspecs = HeapAlloc(GetProcessHeap(), 0, sizeof(COMDLG_FILTERSPEC)*cFileTypes);
+    This->filterspecs = malloc(sizeof(COMDLG_FILTERSPEC)*cFileTypes);
     for(i = 0; i < cFileTypes; i++)
     {
         This->filterspecs[i].pszName = StrDupW(rgFilterSpec[i].pszName);
@@ -2619,7 +2625,7 @@ static HRESULT WINAPI IFileDialog2_fnAdvise(IFileDialog2 *iface, IFileDialogEven
     if(!pfde || !pdwCookie)
         return E_INVALIDARG;
 
-    client = HeapAlloc(GetProcessHeap(), 0, sizeof(events_client));
+    client = malloc(sizeof(events_client));
     client->pfde = pfde;
     client->cookie = ++This->events_next_cookie;
 
@@ -2650,7 +2656,7 @@ static HRESULT WINAPI IFileDialog2_fnUnadvise(IFileDialog2 *iface, DWORD dwCooki
     {
         list_remove(&found->entry);
         IFileDialogEvents_Release(found->pfde);
-        HeapFree(GetProcessHeap(), 0, found);
+        free(found);
         return S_OK;
     }
 
@@ -2875,7 +2881,7 @@ static HRESULT WINAPI IFileDialog2_fnSetDefaultExtension(IFileDialog2 *iface, LP
     TRACE("%p (%s)\n", This, debugstr_w(pszDefaultExtension));
 
     LocalFree(This->default_ext);
-    This->default_ext = StrDupW(pszDefaultExtension);
+    This->default_ext = (pszDefaultExtension && pszDefaultExtension[0]) ? StrDupW(pszDefaultExtension) : NULL;
 
     return S_OK;
 }
@@ -3601,6 +3607,10 @@ static HRESULT WINAPI IServiceProvider_fnQueryService(IServiceProvider *iface,
         hr = IExplorerBrowser_QueryInterface(This->peb, riid, ppv);
     else if(IsEqualGUID(guidService, &SID_SExplorerBrowserFrame))
         hr = IFileDialog2_QueryInterface(&This->IFileDialog2_iface, riid, ppv);
+    else if((IsEqualIID(riid, &IID_IFolderView) || IsEqualIID(riid, &IID_IFolderView2)) && This->peb)
+    {
+        hr = IExplorerBrowser_GetCurrentView(This->peb, riid, ppv);
+    }
     else
         FIXME("Interface %s requested from unknown service %s\n",
               debugstr_guid(riid), debugstr_guid(guidService));
@@ -4767,7 +4777,7 @@ static HRESULT FileDialog_constructor(IUnknown *pUnkOuter, REFIID riid, void **p
     if(pUnkOuter)
         return CLASS_E_NOAGGREGATION;
 
-    fdimpl = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(FileDialogImpl));
+    fdimpl = calloc(1, sizeof(FileDialogImpl));
     if(!fdimpl)
         return E_OUTOFMEMORY;
 

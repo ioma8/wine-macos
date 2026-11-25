@@ -364,7 +364,7 @@ static HRESULT WINAPI rendertarget_DrawGlyphRun(IDWriteBitmapRenderTarget1 *ifac
         return E_INVALIDARG;
 
     if (FAILED(hr = IDWriteFontFace_QueryInterface(run->fontFace, &IID_IDWriteFontFace3, (void **)&fontface))) {
-        WARN("Failed to get IDWriteFontFace2 interface, hr %#lx.\n", hr);
+        WARN("Failed to get IDWriteFontFace3 interface, hr %#lx.\n", hr);
         return hr;
     }
 
@@ -993,14 +993,17 @@ static HRESULT WINAPI memresourcestream_ReadFileFragment(IDWriteFontFileStream *
     if (!GetFontFileInfo(stream->key, 0, &fileinfo, sizeof(fileinfo), NULL))
         return E_INVALIDARG;
 
-    if ((offset >= fileinfo.size.QuadPart - 1) || (fragment_size > fileinfo.size.QuadPart - offset))
+    if ((offset >= fileinfo.size.QuadPart) || (fragment_size > fileinfo.size.QuadPart - offset))
         return E_INVALIDARG;
 
     if (!(fragment = malloc(fragment_size)))
         return E_OUTOFMEMORY;
 
     if (!GetFontFileData(stream->key, 0, offset, fragment, fragment_size))
+    {
+        free(fragment);
         return E_FAIL;
+    }
 
     *fragment_start = *fragment_context = fragment;
     return S_OK;

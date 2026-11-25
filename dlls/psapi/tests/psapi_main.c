@@ -343,10 +343,10 @@ static void snapshot_check_first_main_module(const struct moduleex_snapshot* sna
     winetest_push_context("%d", snap->list);
     ret = GetModuleBaseNameA(proc, snap->modules[0], buffer, sizeof(buffer));
     ok(ret, "got error %lu\n", GetLastError());
-    ok(!strcasecmp(buffer, modname), "expecting %s but got %s\n", modname, buffer);
+    ok(!stricmp(buffer, modname), "expecting %s but got %s\n", modname, buffer);
     ret = GetModuleFileNameExA(proc, snap->modules[0], buffer, sizeof(buffer));
     ok(ret, "got error %lu\n", GetLastError());
-    ok(!strcasecmp(filename, buffer), "expecting %s but got %s\n", filename, buffer);
+    ok(!stricmp(filename, buffer), "expecting %s but got %s\n", filename, buffer);
 
     ret = GetModuleInformation(proc, snap->modules[0], &info, sizeof(info));
     ok(ret, "got error %lu\n", GetLastError());
@@ -368,7 +368,7 @@ static unsigned int snapshot_count_in_dir(const struct moduleex_snapshot* snap, 
     {
         ret = GetModuleFileNameExA(proc, snap->modules[i], buffer, sizeof(buffer));
         ok(ret, "got error %lu\n", GetLastError());
-        if (!strncasecmp(buffer, dirname, dirname_len)) count++;
+        if (!strnicmp(buffer, dirname, dirname_len)) count++;
     }
     return count;
 }
@@ -1059,6 +1059,16 @@ static void test_GetModuleFileNameEx(void)
     ret = CreateProcessW(NULL, buffer, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     ok(ret, "CreateProcessW failed: %lu\n", GetLastError());
 
+    SetLastError(0xdeadbeef);
+    size = GetModuleFileNameExW((HANDLE)0xdeadbeef, NULL, buffer, ARRAYSIZE(buffer));
+    ok(!size, "got %lu.\n", size);
+    ok(GetLastError() == ERROR_INVALID_HANDLE, "got error %lu.\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
+    size = GetModuleFileNameExA((HANDLE)0xdeadbeef, NULL, szModExPath, ARRAYSIZE(szModExPath));
+    ok(!size, "got %lu.\n", size);
+    ok(GetLastError() == ERROR_INVALID_HANDLE, "got error %lu.\n", GetLastError());
+
     size = GetModuleFileNameExW(pi.hProcess, NULL, buffer, ARRAYSIZE(buffer));
     ok(size ||
        broken(GetLastError() == ERROR_INVALID_HANDLE), /* < Win10 */
@@ -1191,6 +1201,7 @@ static void check_working_set_info(PSAPI_WORKING_SET_EX_INFORMATION *info, const
     ok(info->VirtualAttributes.LargePage == 0, "%s expected LargePage=0 but got %u\n",
         desc, info->VirtualAttributes.LargePage);
 
+    todo_wine_if(info->VirtualAddress == GetModuleHandleA(0))  /* main exe isn't shared on Wine */
     ok(info->VirtualAttributes.Shared == expected_shared || broken(!info->VirtualAttributes.Valid) /* w2003 */,
         "%s expected Shared=%lu but got %u\n", desc, expected_shared, info->VirtualAttributes.Shared);
     if (info->VirtualAttributes.Valid && info->VirtualAttributes.Shared)

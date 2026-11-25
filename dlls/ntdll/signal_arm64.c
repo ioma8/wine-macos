@@ -28,7 +28,6 @@
 #include <setjmp.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
@@ -558,9 +557,10 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
         }
         else  /* hack: call builtin handlers registered in the tib list */
         {
-            while (is_valid_frame( (ULONG_PTR)teb_frame ) &&
-                   (ULONG64)teb_frame < new_context.Sp &&
-                   (ULONG64)teb_frame < (ULONG64)end_frame)
+            ULONG_PTR last_frame = new_context.Sp;
+            if (end_frame && (ULONG_PTR)end_frame < last_frame) last_frame = (ULONG_PTR)end_frame;
+
+            while (is_valid_frame( (ULONG_PTR)teb_frame ) && (ULONG_PTR)teb_frame < last_frame)
             {
                 TRACE( "calling TEB handler %p (rec=%p, frame=%p context=%p, dispatch=%p)\n",
                        teb_frame->Handler, rec, teb_frame, dispatch.ContextRecord, &dispatch );
@@ -587,7 +587,7 @@ void WINAPI RtlUnwindEx( PVOID end_frame, PVOID target_ip, EXCEPTION_RECORD *rec
                     break;
                 }
             }
-            if ((ULONG64)teb_frame == (ULONG64)end_frame && (ULONG64)end_frame < new_context.Sp) break;
+            if ((ULONG_PTR)teb_frame == last_frame && last_frame < new_context.Sp) break;
         }
 
         if (dispatch.EstablisherFrame == (ULONG64)end_frame) break;
@@ -611,6 +611,16 @@ NTSTATUS WINAPI RtlGetNativeSystemInformation( SYSTEM_INFORMATION_CLASS class,
                                                void *info, ULONG size, ULONG *ret_size )
 {
     return NtQuerySystemInformation( class, info, size, ret_size );
+}
+
+
+static ULONGLONG cpu_features_bitmap[2];
+static RTL_RUN_ONCE init_once = RTL_RUN_ONCE_INIT;
+
+static DWORD WINAPI init_cpu_features( RTL_RUN_ONCE *once, void *param, void **context )
+{
+    return !NtQuerySystemInformation( SystemProcessorFeaturesBitMapInformation,
+                                      cpu_features_bitmap, sizeof(cpu_features_bitmap), NULL );
 }
 
 
@@ -650,10 +660,17 @@ BOOLEAN WINAPI RtlIsProcessorFeaturePresent( UINT feature )
         (1ull << PF_ARM_SVE_SM4_INSTRUCTIONS_AVAILABLE) |
         (1ull << PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE) |
         (1ull << PF_ARM_SVE_F32MM_INSTRUCTIONS_AVAILABLE) |
-        (1ull << PF_ARM_SVE_F64MM_INSTRUCTIONS_AVAILABLE);
+        (1ull << PF_ARM_SVE_F64MM_INSTRUCTIONS_AVAILABLE) |
+        (1ull << PF_ARM_LSE2_AVAILABLE);
 
-    return (feature < PROCESSOR_FEATURE_MAX && (arm64_features & (1ull << feature)) &&
-            user_shared_data->ProcessorFeatures[feature]);
+    if (feature < PROCESSOR_FEATURE_MAX)
+        return (arm64_features & (1ull << feature)) && user_shared_data->ProcessorFeatures[feature];
+
+    feature -= PROCESSOR_FEATURE_MAX;
+    if (feature >= 8 * sizeof(cpu_features_bitmap)) return FALSE;
+
+    RtlRunOnceExecuteOnce( &init_once, init_cpu_features, NULL, NULL );
+    return !!(cpu_features_bitmap[feature / 64] & (1ull << (feature % 64)));
 }
 
 

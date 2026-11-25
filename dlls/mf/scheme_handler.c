@@ -23,6 +23,8 @@
 #include "windef.h"
 #include "winbase.h"
 
+#include "shlwapi.h"
+
 #include "evr.h"
 #include "mfidl.h"
 #include "mf_private.h"
@@ -406,8 +408,8 @@ static HRESULT WINAPI scheme_handler_callback_Invoke(IMFAsyncCallback *iface, IM
                 hr = IMFSourceResolver_CreateObjectFromByteStream(resolver, stream, context->url, context->flags,
                         context->props, &obj_type, &object);
                 IMFSourceResolver_Release(resolver);
-                IMFByteStream_Release(stream);
             }
+            IMFByteStream_Release(stream);
         }
         else
         {
@@ -454,8 +456,13 @@ static const IMFAsyncCallbackVtbl scheme_handler_callback_vtbl =
 
 static HRESULT file_stream_create(const WCHAR *url, DWORD flags, IMFByteStream **out)
 {
-    if (!wcsnicmp(url, L"file://", 7))
-        url += 7;
+    WCHAR path[MAX_PATH];
+    DWORD len;
+
+    len = ARRAY_SIZE(path);
+    if (SUCCEEDED(PathCreateFromUrlW(url, path, &len, 0)))
+        url = path;
+
     return MFCreateFile(flags & MF_RESOLUTION_WRITE ? MF_ACCESSMODE_READWRITE : MF_ACCESSMODE_READ,
             MF_OPENMODE_FAIL_IF_NOT_EXIST, MF_FILEFLAGS_NONE, url, out);
 }
@@ -476,6 +483,68 @@ HRESULT file_scheme_handler_construct(REFIID riid, void **obj)
     list_init(&handler->results);
     InitializeCriticalSection(&handler->cs);
     handler->create_stream = file_stream_create;
+
+    hr = IMFSchemeHandler_QueryInterface(&handler->IMFSchemeHandler_iface, riid, obj);
+    IMFSchemeHandler_Release(&handler->IMFSchemeHandler_iface);
+
+    return hr;
+}
+
+static HRESULT http_stream_create(const WCHAR *url, DWORD flags, IMFByteStream **out)
+{
+    if (flags & MF_RESOLUTION_WRITE)
+        return E_INVALIDARG;
+
+    return create_http_bytestream(url, FALSE, (void **)out);
+}
+
+HRESULT http_scheme_handler_construct(REFIID riid, void **obj)
+{
+    struct scheme_handler *handler;
+    HRESULT hr;
+
+    TRACE("%s, %p.\n", debugstr_guid(riid), obj);
+
+    if (!(handler = calloc(1, sizeof(*handler))))
+        return E_OUTOFMEMORY;
+
+    handler->IMFSchemeHandler_iface.lpVtbl = &scheme_handler_vtbl;
+    handler->IMFAsyncCallback_iface.lpVtbl = &scheme_handler_callback_vtbl;
+    handler->refcount = 1;
+    list_init(&handler->results);
+    InitializeCriticalSection(&handler->cs);
+    handler->create_stream = http_stream_create;
+
+    hr = IMFSchemeHandler_QueryInterface(&handler->IMFSchemeHandler_iface, riid, obj);
+    IMFSchemeHandler_Release(&handler->IMFSchemeHandler_iface);
+
+    return hr;
+}
+
+static HRESULT secure_http_stream_create(const WCHAR *url, DWORD flags, IMFByteStream **out)
+{
+    if (flags & MF_RESOLUTION_WRITE)
+        return E_INVALIDARG;
+
+    return create_http_bytestream(url, FALSE, (void **)out);
+}
+
+HRESULT secure_http_scheme_handler_construct(REFIID riid, void **obj)
+{
+    struct scheme_handler *handler;
+    HRESULT hr;
+
+    TRACE("%s, %p.\n", debugstr_guid(riid), obj);
+
+    if (!(handler = calloc(1, sizeof(*handler))))
+        return E_OUTOFMEMORY;
+
+    handler->IMFSchemeHandler_iface.lpVtbl = &scheme_handler_vtbl;
+    handler->IMFAsyncCallback_iface.lpVtbl = &scheme_handler_callback_vtbl;
+    handler->refcount = 1;
+    list_init(&handler->results);
+    InitializeCriticalSection(&handler->cs);
+    handler->create_stream = secure_http_stream_create;
 
     hr = IMFSchemeHandler_QueryInterface(&handler->IMFSchemeHandler_iface, riid, obj);
     IMFSchemeHandler_Release(&handler->IMFSchemeHandler_iface);

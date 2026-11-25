@@ -29,6 +29,7 @@ struct download_entry
     struct list entry;
     IDirectMusicDownload *download;
     HANDLE handle;
+    BOOL can_free;
     DWORD id;
 };
 
@@ -213,7 +214,7 @@ static HRESULT WINAPI synth_port_GetLatencyClock(IDirectMusicPort *iface, IRefer
 
     TRACE("(%p, %p)\n", iface, clock);
 
-    return IDirectMusicSynth8_GetLatencyClock(This->synth, clock);
+    return IDirectMusicSynth_GetLatencyClock(This->synth, clock);
 }
 
 static HRESULT WINAPI synth_port_GetRunningStats(IDirectMusicPort *iface, DMUS_SYNTHSTATS *stats)
@@ -522,6 +523,7 @@ static HRESULT WINAPI synth_port_download_Download(IDirectMusicPortDownload *ifa
         IDirectMusicDownload_AddRef(download);
         entry->id = info->dwDLId;
         entry->handle = handle;
+        entry->can_free = can_free;
         list_add_tail(&This->downloads, &entry->entry);
     }
 
@@ -529,11 +531,19 @@ static HRESULT WINAPI synth_port_download_Download(IDirectMusicPortDownload *ifa
     return hr;
 }
 
+static HRESULT CALLBACK unload_callback(HANDLE handle, HANDLE user_data)
+{
+    IDirectMusicDownload *download = (IDirectMusicDownload *)user_data;
+    IDirectMusicDownload_Release(download);
+    return S_OK;
+}
+
 static HRESULT WINAPI synth_port_download_Unload(IDirectMusicPortDownload *iface, IDirectMusicDownload *download)
 {
     struct synth_port *This = synth_from_IDirectMusicPortDownload(iface);
     struct download_entry *entry;
     HANDLE handle = 0;
+    BOOL can_free;
 
     TRACE("(%p/%p)->(%p)\n", iface, This, download);
 
@@ -544,15 +554,21 @@ static HRESULT WINAPI synth_port_download_Unload(IDirectMusicPortDownload *iface
         if (entry->download == download)
         {
             list_remove(&entry->entry);
-            IDirectMusicDownload_Release(entry->download);
             handle = entry->handle;
+            can_free = entry->can_free;
             free(entry);
             break;
         }
     }
 
     if (!handle) return S_OK;
-    return IDirectMusicSynth_Unload(This->synth, handle, NULL, NULL);
+
+    if (can_free)
+    {
+        IDirectMusicDownload_Release(download);
+        return IDirectMusicSynth_Unload(This->synth, handle, NULL, NULL);
+    }
+    return IDirectMusicSynth_Unload(This->synth, handle, unload_callback, download);
 }
 
 static const IDirectMusicPortDownloadVtbl synth_port_download_vtbl = {
@@ -727,7 +743,6 @@ HRESULT synth_port_create(IDirectMusic8Impl *parent, DMUS_PORTPARAMS *port_param
 {
     struct synth_port *obj;
     HRESULT hr = E_FAIL;
-    int i;
 
     TRACE("(%p, %p)\n", port_params, port);
 
@@ -789,33 +804,6 @@ HRESULT synth_port_create(IDirectMusic8Impl *parent, DMUS_PORTPARAMS *port_param
 
         IKsControl_KsProperty(obj->synth_control, &volume_prop, sizeof(volume_prop), &volume,
                 sizeof(volume), &volume_size);
-    }
-
-    if (0)
-    {
-        if (port_params->dwValidParams & DMUS_PORTPARAMS_CHANNELGROUPS) {
-            obj->nrofgroups = port_params->dwChannelGroups;
-            /* Setting default priorities */
-            for (i = 0; i < obj->nrofgroups; i++) {
-                TRACE ("Setting default channel priorities on channel group %i\n", i + 1);
-                obj->group[i].channel[0].priority = DAUD_CHAN1_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[1].priority = DAUD_CHAN2_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[2].priority = DAUD_CHAN3_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[3].priority = DAUD_CHAN4_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[4].priority = DAUD_CHAN5_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[5].priority = DAUD_CHAN6_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[6].priority = DAUD_CHAN7_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[7].priority = DAUD_CHAN8_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[8].priority = DAUD_CHAN9_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[9].priority = DAUD_CHAN10_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[10].priority = DAUD_CHAN11_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[11].priority = DAUD_CHAN12_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[12].priority = DAUD_CHAN13_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[13].priority = DAUD_CHAN14_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[14].priority = DAUD_CHAN15_DEF_VOICE_PRIORITY;
-                obj->group[i].channel[15].priority = DAUD_CHAN16_DEF_VOICE_PRIORITY;
-            }
-        }
     }
 
     if (SUCCEEDED(hr)) {

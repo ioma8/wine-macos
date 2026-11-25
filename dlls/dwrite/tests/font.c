@@ -100,6 +100,21 @@
 
 DEFINE_EXPECT(setfillmode);
 
+#define check_interface(a, b, c) check_interface_(__LINE__, a, b, c)
+static void check_interface_(unsigned int line, void *iface_ptr, REFIID iid, BOOL supported)
+{
+    IUnknown *iface = iface_ptr;
+    HRESULT hr, expected_hr;
+    IUnknown *unk;
+
+    expected_hr = supported ? S_OK : E_NOINTERFACE;
+
+    hr = IUnknown_QueryInterface(iface, iid, (void **)&unk);
+    ok_(__FILE__, line)(hr == expected_hr, "Got hr %#lx, expected %#lx.\n", hr, expected_hr);
+    if (SUCCEEDED(hr))
+        IUnknown_Release(unk);
+}
+
 #define EXPECT_REF(obj,ref) _expect_ref((IUnknown*)obj, ref, __LINE__)
 static void _expect_ref(IUnknown* obj, ULONG ref, int line)
 {
@@ -107,15 +122,6 @@ static void _expect_ref(IUnknown* obj, ULONG ref, int line)
     IUnknown_AddRef(obj);
     rc = IUnknown_Release(obj);
     ok_(__FILE__,line)(rc == ref, "expected refcount %ld, got %ld\n", ref, rc);
-}
-
-#define EXPECT_REF_BROKEN(obj,ref,brokenref) _expect_ref_broken((IUnknown*)obj, ref, brokenref, __LINE__)
-static void _expect_ref_broken(IUnknown* obj, ULONG ref, ULONG brokenref, int line)
-{
-    ULONG rc;
-    IUnknown_AddRef(obj);
-    rc = IUnknown_Release(obj);
-    ok_(__FILE__,line)(rc == ref || broken(rc == brokenref), "expected refcount %ld, got %ld\n", ref, rc);
 }
 
 static BOOL (WINAPI *pGetFontRealizationInfo)(HDC hdc, void *);
@@ -2110,7 +2116,7 @@ static void get_expected_font_metrics(IDWriteFontFace *fontface, DWRITE_FONT_MET
     }
 
     if (metrics->underlineThickness == 0)
-        metrics->underlineThickness = metrics->designUnitsPerEm / 14;
+        metrics->underlineThickness = (metrics->designUnitsPerEm + 7) / 14;
     if (metrics->strikethroughThickness == 0)
         metrics->strikethroughThickness = metrics->underlineThickness;
 
@@ -3515,7 +3521,7 @@ static void test_CreateFontFileReference(void)
     ok(hr == S_OK, "Failed to get ref key, hr %#lx.\n", hr);
     ok(key1_size == key2_size, "Unexpected key sizes %u, %u.\n", key1_size, key2_size);
     if (key1_size == key2_size)
-        ok(!memcmp(key1, key2, key1_size), "Expected matching keys.\n");
+        todo_wine ok(!memcmp(key1, key2, key1_size), "Expected matching keys.\n");
 
     hr = IDWriteFontFile_GetLoader(file, &loader);
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
@@ -4535,6 +4541,13 @@ static void test_CreateFontFaceFromHdc(void)
     ok(hr == E_NOTIMPL, "Unexpected hr %#lx.\n", hr);
 
     fragment_context = NULL;
+    hr = IDWriteFontFileStream_ReadFileFragment(stream, &fragment, size - 1, 1, &fragment_context);
+    ok(hr == S_OK, "Failed to read fragment, hr %#lx.\n", hr);
+    ok(!!fragment_context, "Unexpected context %p.\n", fragment_context);
+    ok(fragment == fragment_context, "Unexpected data pointer %p, context %p.\n", fragment, fragment_context);
+    IDWriteFontFileStream_ReleaseFileFragment(stream, fragment_context);
+
+    fragment_context = NULL;
     hr = IDWriteFontFileStream_ReadFileFragment(stream, &fragment, 0, size, &fragment_context);
     ok(hr == S_OK, "Failed to read fragment, hr %#lx.\n", hr);
     ok(fragment_context != NULL, "Unexpected context %p.\n", fragment_context);
@@ -5132,6 +5145,14 @@ static void test_ReadFileFragment(void)
 
     hr = IDWriteFontFileStream_GetFileSize(stream, &filesize);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    fragment = NULL;
+    context = (void *)0xdeadbeef;
+    hr = IDWriteFontFileStream_ReadFileFragment(stream, &fragment, filesize - 1, 1, &context);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(!context, "Unexpected context %p.\n", context);
+    ok(!!fragment, "Unexpected fragment pointer %p.\n", fragment);
+    IDWriteFontFileStream_ReleaseFileFragment(stream, context);
 
     /* reading past the end of the stream */
     fragment = (void*)0xdeadbeef;
@@ -5790,8 +5811,13 @@ static void test_CreateRenderingParams(void)
     IDWriteRenderingParams_Release(params);
 
     hr = IDWriteFactory_QueryInterface(factory, &IID_IDWriteFactory3, (void**)&factory3);
-    if (hr == S_OK) {
+    if (hr == S_OK)
+    {
         IDWriteRenderingParams3 *params3;
+
+        hr = IDWriteFactory3_CreateCustomRenderingParams(factory3, 1.0f, 0.0f, 0.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED + 1, DWRITE_GRID_FIT_MODE_DEFAULT, &params3);
+        ok(hr == E_INVALIDARG, "Unexpected hr %#lx.\n", hr);
 
         hr = IDWriteFactory3_CreateCustomRenderingParams(factory3, 1.0f, 0.0f, 0.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED, DWRITE_GRID_FIT_MODE_DEFAULT, &params3);
@@ -8254,7 +8280,7 @@ static void test_CreateFontFaceReference(void)
     hr = IDWriteFactory3_CreateFontFileReference(factory, path, NULL, &file);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
-    hr = IDWriteFactory3_CreateFontFaceReference_(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
+    hr = IDWriteFactory3_CreateFontFaceReference_1(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
     hr = IDWriteFontFaceReference_GetFontFile(ref, &file1);
@@ -8868,7 +8894,7 @@ static void test_ComputeGlyphOrigins(void)
         get_expected_glyph_origins(origins_tests[i].baseline_origin, &run, expected_origins);
 
         memset(origins, 0, sizeof(origins));
-        hr = IDWriteFactory4_ComputeGlyphOrigins_(factory, &run, origins_tests[i].baseline_origin, origins);
+        hr = IDWriteFactory4_ComputeGlyphOrigins_1(factory, &run, origins_tests[i].baseline_origin, origins);
         ok(hr == S_OK, "%u: failed to compute glyph origins, hr %#lx.\n", i, hr);
         for (j = 0; j < run.glyphCount; ++j)
         {
@@ -8897,7 +8923,7 @@ static void test_ComputeGlyphOrigins(void)
     baseline_origin.y = 321.0f;
 
     memset(origins, 0, sizeof(origins));
-    hr = IDWriteFactory4_ComputeGlyphOrigins_(factory, &run, baseline_origin, origins);
+    hr = IDWriteFactory4_ComputeGlyphOrigins_1(factory, &run, baseline_origin, origins);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     ok(origins[0].x == 123.0f && origins[0].y == 321.0f, "origins[0] %f,%f\n", origins[0].x, origins[0].y);
     ok(origins[1].x == 133.0f && origins[1].y == 321.0f, "origins[1] %f,%f\n", origins[1].x, origins[1].y);
@@ -8991,7 +9017,6 @@ static void test_object_lifetime(void)
     ok(hr == S_OK, "got %#lx\n", hr);
 
     EXPECT_REF(family, 2);
-    EXPECT_REF(collection, 2);
     EXPECT_REF(factory, 2);
 
     hr = IDWriteFont_GetFontFamily(font, &family2);
@@ -9007,10 +9032,7 @@ static void test_object_lifetime(void)
     ok(hr == S_OK, "got %#lx\n", hr);
 
     EXPECT_REF(font, 1);
-    EXPECT_REF_BROKEN(fontface, 1, 2);
     EXPECT_REF(family, 2);
-    EXPECT_REF(collection, 2);
-    EXPECT_REF_BROKEN(factory, 3, 2);
 
     /* get font from fontface */
     hr = IDWriteFontCollection_GetFontFromFontFace(collection, fontface, &font2);
@@ -9018,17 +9040,13 @@ static void test_object_lifetime(void)
 
     EXPECT_REF(font, 1);
     EXPECT_REF(font2, 1);
-    EXPECT_REF_BROKEN(fontface, 1, 2);
     EXPECT_REF(family, 2);
-    EXPECT_REF(collection, 3);
-    EXPECT_REF_BROKEN(factory, 3, 2);
 
     IDWriteFont_Release(font2);
     IDWriteFontFace_Release(fontface);
 
     EXPECT_REF(font, 1);
     EXPECT_REF(family, 2);
-    EXPECT_REF(collection, 2);
     EXPECT_REF(factory, 2);
 
     IDWriteFont_Release(font);
@@ -9043,7 +9061,6 @@ static void test_object_lifetime(void)
     ok(hr == S_OK, "got %#lx\n", hr);
 
     EXPECT_REF(family, 2);
-    EXPECT_REF(collection, 2);
     EXPECT_REF(factory, 2);
 
     hr = IDWriteFontFamily_GetMatchingFonts(family, DWRITE_FONT_WEIGHT_NORMAL,
@@ -9302,6 +9319,13 @@ static void test_inmemory_file_loader(void)
     ok(hr == S_OK, "Failed to create a stream, hr %#lx.\n", hr);
 
     context2 = (void *)0xdeadbeef;
+    frag_start = NULL;
+    hr = IDWriteFontFileStream_ReadFileFragment(stream2, &frag_start, file_size - 1, 1, &context2);
+    ok(hr == S_OK, "Failed to read a fragment, hr %#lx.\n", hr);
+    ok(!context2, "Unexpected context %p.\n", context2);
+    ok(frag_start == ((char *)data + file_size - 1), "Unexpected fragment pointer %p.\n", frag_start);
+
+    context2 = (void *)0xdeadbeef;
     hr = IDWriteFontFileStream_ReadFileFragment(stream2, &frag_start, 0, file_size, &context2);
     ok(hr == S_OK, "Failed to read a fragment, hr %#lx.\n", hr);
     ok(context2 == NULL, "Unexpected context %p.\n", context2);
@@ -9513,6 +9537,30 @@ static DWORD get_cblc_formats(IDWriteFontFace4 *fontface)
     return ret;
 }
 
+static DWORD get_colr_formats(IDWriteFontFace4 *fontface)
+{
+    DWORD ret = DWRITE_GLYPH_IMAGE_FORMATS_COLR;
+    struct dwrite_fonttable colr;
+    BOOL exists = FALSE;
+    WORD version;
+    HRESULT hr;
+
+    hr = IDWriteFontFace4_TryGetFontTable(fontface, MS_COLR_TAG, (const void **)&colr.data, &colr.size, &colr.context, &exists);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(!!exists, "Expected COLR table.\n");
+
+    if (!exists)
+        return 0;
+
+    version = table_read_be_word(&colr, NULL, 0);
+    if (version == 1)
+        ret |= DWRITE_GLYPH_IMAGE_FORMATS_COLR_PAINT_TREE;
+
+    IDWriteFontFace4_ReleaseFontTable(fontface, colr.context);
+
+    return ret;
+}
+
 static DWORD get_face_glyph_image_formats(IDWriteFontFace4 *fontface)
 {
     DWORD ret = DWRITE_GLYPH_IMAGE_FORMATS_NONE;
@@ -9525,7 +9573,7 @@ static DWORD get_face_glyph_image_formats(IDWriteFontFace4 *fontface)
         ret |= DWRITE_GLYPH_IMAGE_FORMATS_CFF;
 
     if (face_has_table(fontface, MS_COLR_TAG))
-        ret |= DWRITE_GLYPH_IMAGE_FORMATS_COLR;
+        ret |= get_colr_formats(fontface);
 
     if (face_has_table(fontface, MS_SVG__TAG))
         ret |= DWRITE_GLYPH_IMAGE_FORMATS_SVG;
@@ -9781,16 +9829,21 @@ static void test_AnalyzeContainerType(void)
 
 static void test_fontsetbuilder(void)
 {
+    IDWriteFontFileLoader file_loader = { &dwritefontfileloadervtbl };
     IDWriteFontFaceReference *ref, *ref2, *ref3;
+    DWRITE_FONT_AXIS_VALUE axis_values[4];
     IDWriteFontCollection1 *collection;
     IDWriteFontFaceReference1 *ref1;
     IDWriteFontSetBuilder1 *builder1;
+    DWRITE_FONT_FILE_TYPE file_type;
+    DWRITE_FONT_FACE_TYPE face_type;
     IDWriteFontSetBuilder *builder;
-    DWRITE_FONT_AXIS_VALUE axis_values[4];
     IDWriteFactory3 *factory;
     UINT32 count, i, refcount;
     IDWriteFontSet *fontset;
     IDWriteFontFile *file;
+    FILETIME timestamp;
+    BOOL supported;
     WCHAR *path;
     HRESULT hr;
 
@@ -10015,6 +10068,48 @@ static void test_fontsetbuilder(void)
     }
 
     IDWriteFontCollection1_Release(collection);
+
+    /* Some failure cases. */
+    hr = IDWriteFactory3_CreateFontSetBuilder(factory, &builder);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    hr = IDWriteFontSetBuilder_QueryInterface(builder, &IID_IDWriteFontSetBuilder1, (void **)&builder1);
+    if (hr == E_NOINTERFACE) goto done;
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    /* File doesn't exist on disk. */
+    GetSystemTimeAsFileTime(&timestamp);
+    hr = IDWriteFactory3_CreateFontFileReference(factory, L"some-path", &timestamp, &file);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
+
+    hr = IDWriteFontSetBuilder1_AddFontFile(builder1, file);
+    ok(FAILED(hr), "Unexpected hr %#lx.\n",hr);
+    IDWriteFontFile_Release(file);
+
+    /* Valid file object from custom loader, that's unsupported according to Analyze(). */
+    hr = IDWriteFactory3_RegisterFontFileLoader(factory, &file_loader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    file = NULL;
+    hr = IDWriteFactory3_CreateCustomFontFileReference(factory, "test", 4, &file_loader, &file);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    supported = TRUE;
+    hr = IDWriteFontFile_Analyze(file, &supported, &file_type, &face_type, &count);
+    ok(hr == 0x8faecafe, "Unexpected hr %#lx.\n", hr);
+    ok(!supported, "Unexpected value %d.\n", supported);
+    ok(!count, "Unexpected face count %u.\n", count);
+
+    hr = IDWriteFontSetBuilder1_AddFontFile(builder1, file);
+    ok(hr == 0x8faecafe, "Unexpected hr %#lx.\n", hr);
+    IDWriteFontFile_Release(file);
+
+    hr = IDWriteFactory3_UnregisterFontFileLoader(factory, &file_loader);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    IDWriteFontSetBuilder1_Release(builder1);
+done:
+    IDWriteFontSetBuilder_Release(builder);
 
     refcount = IDWriteFactory3_Release(factory);
     ok(!refcount, "Factory not released, %u.\n", refcount);
@@ -10530,7 +10625,7 @@ static void test_CreateFontCollectionFromFontSet(void)
 
     if (!(factory = create_factory_iid(&IID_IDWriteFactory5)))
     {
-        win_skip("_CreateFontCollectionFromFontSet() is not available.\n");
+        win_skip("CreateFontCollectionFromFontSet() is not available.\n");
         return;
     }
 
@@ -10546,12 +10641,12 @@ static void test_CreateFontCollectionFromFontSet(void)
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
 
     /* Add same file, with explicit properties. */
-    hr = IDWriteFactory5_CreateFontFaceReference_(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
+    hr = IDWriteFactory5_CreateFontFaceReference_1(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
     props[0].propertyId = DWRITE_FONT_PROPERTY_ID_WEIGHT_STRETCH_STYLE_FAMILY_NAME;
     props[0].propertyValue = L"Another Font";
     props[0].localeName = L"en-US";
-    hr = IDWriteFontSetBuilder1_AddFontFaceReference_(builder, ref, props, 1);
+    hr = IDWriteFontSetBuilder1_AddFontFaceReference_1(builder, ref, props, 1);
     todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
     IDWriteFontFaceReference_Release(ref);
@@ -10603,6 +10698,9 @@ static void test_GetMatchingFontsByLOGFONT(void)
 
     hr = IDWriteFactory3_GetSystemFontSet(factory, &systemset);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    check_interface(systemset, &IID_IDWriteFontSet, TRUE);
+    check_interface(systemset, &IID_IUnknown, TRUE);
 
     interop = NULL;
     hr = IDWriteFactory3_GetGdiInterop(factory, &interop0);

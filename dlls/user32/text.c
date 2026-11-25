@@ -37,7 +37,6 @@
 #include "usp10.h"
 #include "user_private.h"
 #include "wine/debug.h"
-#include "wine/heap.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(text);
 
@@ -84,6 +83,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(text);
 #define LF     10
 #define CR     13
 #define SPACE  32
+#define SYMBOL_SPACE 0xf020
 #define PREFIX 38
 #define ALPHA_PREFIX 30 /* Win16: Alphabet prefix */
 #define KANA_PREFIX  31 /* Win16: Katakana prefix */
@@ -248,7 +248,7 @@ static void TEXT_PathEllipsify (HDC hdc, WCHAR *str, unsigned int max_len,
     lastBkSlash  = wcsrchr (str, BACK_SLASH);
     lastFwdSlash = wcsrchr (str, FORWARD_SLASH);
     lastSlash = lastBkSlash > lastFwdSlash ? lastBkSlash : lastFwdSlash;
-    if (!lastSlash) lastSlash = str;
+    if (!lastSlash) lastSlash = str + *len_str;
     len_trailing = *len_str - (lastSlash - str);
 
     /* overlap-safe movement to the right */
@@ -362,7 +362,7 @@ static void TEXT_WordBreak (HDC hdc, WCHAR *str, unsigned int max_str,
     assert (format & DT_WORDBREAK);
     assert (chars_fit < *len_str);
 
-    sla = heap_alloc(sizeof(SCRIPT_LOGATTR) * *len_str);
+    sla = malloc(sizeof(SCRIPT_LOGATTR) * *len_str);
 
     memset(&sa, 0, sizeof(SCRIPT_ANALYSIS));
     sa.eScript = SCRIPT_UNDEFINED;
@@ -377,16 +377,18 @@ static void TEXT_WordBreak (HDC hdc, WCHAR *str, unsigned int max_str,
     word_fits = TRUE;
     if (!chars_fit)
         word_fits = FALSE;
-    else if (sla[i].fSoftBreak) /* chars_fit < *len_str so this is valid */
+    else if (sla[i].fSoftBreak || *p == SYMBOL_SPACE) /* chars_fit < *len_str so this is valid */
     {
          /* the word just fitted */
         p--;
     }
     else
     {
-        while (i > 0 && !sla[(--i)+1].fWhiteSpace) p--;
+        /* keep SYMBOL_SPACE on the same line if it fits */
+        while (i > 0 && !(sla[i--].fWhiteSpace || p[-1] == SYMBOL_SPACE ))
+            p--;
         p--;
-        word_fits = (i != 0 || sla[i+1].fWhiteSpace );
+        word_fits = (i != 0 || sla[i+1].fWhiteSpace);
     }
 
     /* If there was one. */
@@ -442,7 +444,7 @@ static void TEXT_WordBreak (HDC hdc, WCHAR *str, unsigned int max_str,
     }
     /* Remeasure the string */
     GetTextExtentExPointW (hdc, str, *len_str, 0, NULL, NULL, size);
-    heap_free(sla);
+    free(sla);
 }
 
 /*********************************************************************
@@ -961,7 +963,7 @@ INT WINAPI DrawTextExW( HDC hdc, LPWSTR str, INT i_count,
     if (flags & DT_MODIFYSTRING)
     {
         size_retstr = (count + 4) * sizeof (WCHAR);
-        retstr = heap_alloc(size_retstr);
+        retstr = malloc(size_retstr);
         if (!retstr) return 0;
         memcpy (retstr, str, size_retstr);
     }
@@ -1071,7 +1073,7 @@ INT WINAPI DrawTextExW( HDC hdc, LPWSTR str, INT i_count,
     ret = y - rect->top;
     if (ret == 0) ret = 1;
 done:
-    heap_free(retstr);
+    free(retstr);
     return ret;
 }
 
@@ -1135,7 +1137,7 @@ INT WINAPI DrawTextExA( HDC hdc, LPSTR str, INT count,
         wmax += 4;
         amax += 4;
    }
-   wstr = heap_alloc(wmax * sizeof(WCHAR));
+   wstr = malloc(wmax * sizeof(WCHAR));
    if (wstr)
    {
        MultiByteToWideChar( cp, 0, str, count, wstr, wcount );
@@ -1154,7 +1156,7 @@ INT WINAPI DrawTextExA( HDC hdc, LPSTR str, INT count,
             for (i=4, p=wstr+wcount; i-- && *p != 0xFFFE; p++) wcount++;
             WideCharToMultiByte( cp, 0, wstr, wcount, str, amax, NULL, NULL );
        }
-       heap_free(wstr);
+       free(wstr);
    }
    return ret;
 }
@@ -1423,11 +1425,11 @@ LONG WINAPI TabbedTextOutA( HDC hdc, INT x, INT y, LPCSTR lpstr, INT count,
 {
     LONG ret;
     DWORD len = MultiByteToWideChar( CP_ACP, 0, lpstr, count, NULL, 0 );
-    LPWSTR strW = heap_alloc( len * sizeof(WCHAR) );
+    LPWSTR strW = malloc( len * sizeof(WCHAR) );
     if (!strW) return 0;
     MultiByteToWideChar( CP_ACP, 0, lpstr, count, strW, len );
     ret = TabbedTextOutW( hdc, x, y, strW, len, cTabStops, lpTabPos, nTabOrg );
-    heap_free( strW );
+    free( strW );
     return ret;
 }
 
@@ -1476,11 +1478,11 @@ DWORD WINAPI GetTabbedTextExtentA( HDC hdc, LPCSTR lpstr, INT count,
 {
     LONG ret;
     DWORD len = MultiByteToWideChar( CP_ACP, 0, lpstr, count, NULL, 0 );
-    LPWSTR strW = heap_alloc( len * sizeof(WCHAR) );
+    LPWSTR strW = malloc( len * sizeof(WCHAR) );
     if (!strW) return 0;
     MultiByteToWideChar( CP_ACP, 0, lpstr, count, strW, len );
     ret = GetTabbedTextExtentW( hdc, strW, len, cTabStops, lpTabPos );
-    heap_free( strW );
+    free( strW );
     return ret;
 }
 

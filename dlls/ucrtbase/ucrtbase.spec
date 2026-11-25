@@ -48,7 +48,8 @@
 @ cdecl __AdjustPointer(ptr ptr)
 @ stub __BuildCatchObject
 @ stub __BuildCatchObjectHelper
-@ stdcall -arch=!i386 __C_specific_handler(ptr long ptr ptr) ntdll.__C_specific_handler
+@ stdcall -arch=!i386,!arm64ec __C_specific_handler(ptr long ptr ptr)
+@ stdcall -arch=arm64ec -norelay __C_specific_handler(ptr long ptr ptr)
 @ cdecl __CxxDetectRethrow(ptr)
 @ cdecl __CxxExceptionFilter(ptr ptr long ptr)
 @ cdecl -norelay __CxxFrameHandler(ptr ptr ptr ptr)
@@ -189,9 +190,9 @@
 @ cdecl _aligned_msize(ptr long long)
 @ cdecl _aligned_offset_malloc(long long long)
 @ cdecl _aligned_offset_realloc(ptr long long long)
-@ stub _aligned_offset_recalloc
+@ cdecl _aligned_offset_recalloc(ptr long long long long)
 @ cdecl _aligned_realloc(ptr long long)
-@ stub _aligned_recalloc
+@ cdecl _aligned_recalloc(ptr long long long)
 @ cdecl _assert(str str long)
 @ cdecl _atodbl(ptr str)
 @ cdecl _atodbl_l(ptr str ptr)
@@ -841,9 +842,9 @@
 @ cdecl _o__aligned_msize(ptr long long) _aligned_msize
 @ cdecl _o__aligned_offset_malloc(long long long) _aligned_offset_malloc
 @ cdecl _o__aligned_offset_realloc(ptr long long long) _aligned_offset_realloc
-@ stub _o__aligned_offset_recalloc
+@ cdecl _o__aligned_offset_recalloc(ptr long long long long) _aligned_offset_recalloc
 @ cdecl _o__aligned_realloc(ptr long long) _aligned_realloc
-@ stub _o__aligned_recalloc
+@ cdecl _o__aligned_recalloc(ptr long long long) _aligned_recalloc
 @ cdecl _o__atodbl(ptr str) _atodbl
 @ cdecl _o__atodbl_l(ptr str ptr) _atodbl_l
 @ cdecl _o__atof_l(str ptr) _atof_l
@@ -1604,7 +1605,7 @@
 @ cdecl _o_erff(float) erff
 @ cdecl _o_erfl(double) erf
 @ cdecl _o_exit(long) exit
-@ cdecl _o_exp(double) exp
+@ cdecl _o_exp(double) MSVCRT_exp
 @ cdecl _o_exp2(double) exp2
 @ cdecl _o_exp2f(float) exp2f
 @ cdecl _o_exp2l(double) exp2
@@ -2043,7 +2044,7 @@
 @ cdecl _wcstof_l(wstr ptr ptr)
 @ cdecl -ret64 _wcstoi64(wstr ptr long)
 @ cdecl -ret64 _wcstoi64_l(wstr ptr long ptr)
-@ stub _wcstoimax_l
+@ cdecl -ret64 _wcstoimax_l(wstr ptr long ptr) _wcstoi64_l
 @ cdecl _wcstol_l(wstr ptr long ptr)
 @ cdecl _wcstold_l(wstr ptr ptr) _wcstod_l
 @ cdecl -ret64 _wcstoll_l(wstr ptr long ptr) _wcstoi64_l
@@ -2053,7 +2054,7 @@
 @ cdecl -ret64 _wcstoui64_l(wstr ptr long ptr)
 @ cdecl _wcstoul_l(wstr ptr long ptr)
 @ cdecl -ret64 _wcstoull_l(wstr ptr long ptr) _wcstoui64_l
-@ stub _wcstoumax_l
+@ cdecl -ret64 _wcstoumax_l(wstr ptr long ptr) _wcstoui64_l
 @ cdecl _wcsupr(wstr)
 @ cdecl _wcsupr_l(wstr ptr)
 @ cdecl _wcsupr_s(wstr long)
@@ -2275,7 +2276,7 @@
 @ cdecl erff(float)
 @ cdecl erfl(double) erf
 @ cdecl exit(long)
-@ cdecl exp(double)
+@ cdecl exp(double) MSVCRT_exp
 @ cdecl exp2(double)
 @ cdecl exp2f(float)
 @ cdecl exp2l(double) exp2
@@ -2425,11 +2426,14 @@
 @ cdecl mbtowc(ptr str long)
 @ cdecl memchr(ptr long long)
 @ cdecl memcmp(ptr ptr long)
-@ cdecl memcpy(ptr ptr long)
+@ cdecl -arch=!arm64ec memcpy(ptr ptr long)
+@ cdecl -arch=arm64ec -norelay memcpy(ptr ptr long)
 @ cdecl memcpy_s(ptr long ptr long)
-@ cdecl memmove(ptr ptr long)
+@ cdecl -arch=!arm64ec memmove(ptr ptr long)
+@ cdecl -arch=arm64ec -norelay memmove(ptr ptr long)
 @ cdecl memmove_s(ptr long ptr long)
-@ cdecl memset(ptr long long)
+@ cdecl -arch=!arm64ec memset(ptr long long)
+@ cdecl -arch=arm64ec -norelay memset(ptr long long)
 @ cdecl modf(double ptr)
 @ cdecl -arch=!i386 modff(float ptr)
 @ cdecl nan(str)
@@ -2582,7 +2586,7 @@
 @ cdecl wcsstr(wstr wstr)
 @ cdecl wcstod(wstr ptr)
 @ cdecl wcstof(ptr ptr)
-@ stub wcstoimax
+@ cdecl -ret64 wcstoimax(wstr ptr long) _wcstoi64
 @ cdecl wcstok(wstr wstr ptr)
 @ cdecl wcstok_s(ptr wstr ptr)
 @ cdecl wcstol(wstr ptr long)
@@ -2592,7 +2596,7 @@
 @ cdecl wcstombs_s(ptr ptr long wstr long)
 @ cdecl wcstoul(wstr ptr long)
 @ cdecl -ret64 wcstoull(wstr ptr long) _wcstoui64
-@ stub wcstoumax
+@ cdecl -ret64 wcstoumax(wstr ptr long) _wcstoui64
 @ cdecl wcsxfrm(ptr wstr long)
 @ cdecl wctob(long)
 @ cdecl wctomb(ptr long)

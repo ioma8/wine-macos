@@ -31,6 +31,16 @@
 #define MODIFIED(rect) (rect.left == 10 && rect.right != 100 && rect.top == 10 && rect.bottom != 100)
 #define EMPTY(rect) (rect.left == rect.right && rect.bottom == rect.top)
 
+static void replace_wchar( WCHAR *str, WCHAR what, WCHAR with)
+{
+    unsigned int i;
+
+    for (i = 0; str[i]; ++i)
+    {
+        if (str[i] == what) str[i] = with;
+    }
+}
+
 static void test_DrawTextCalcRect(void)
 {
     HWND hwnd;
@@ -55,6 +65,8 @@ static void test_DrawTextCalcRect(void)
     BOOL ret;
     DRAWTEXTPARAMS dtp;
     BOOL conform_xp = TRUE;
+    WCHAR string_w[256];
+    unsigned int len;
 
     /* Initialization */
     hwnd = CreateWindowExA(0, "static", NULL, WS_POPUP,
@@ -691,10 +703,64 @@ static void test_DrawTextCalcRect(void)
     textheight = DrawTextExW(hdc, complex_format_textW, -1, &rect, DT_EXPANDTABS, &dtp);
     ok(dtp.uiLengthDrawn == 37, "Unexpected uiLengthDrawn %d\n", dtp.uiLengthDrawn );
 
-
     SelectObject(hdc, hOldFont);
     ret = DeleteObject(hFont);
     ok( ret, "DeleteObject error %lu\n", GetLastError());
+
+    strcpy(lf.lfFaceName, "Arial");
+    lf.lfHeight = -16;
+    lf.lfWeight = FW_REGULAR;
+    hFont = CreateFontIndirectA(&lf);
+    ok(hFont != 0, "got error %lu\n", GetLastError());
+    hOldFont = SelectObject(hdc, hFont);
+
+    wcscpy(string_w, L"A quick brown  fox  jumps over the lazy dog long text");
+    len = wcslen(string_w);
+    replace_wchar(string_w, 0x20, '-');
+    memset(&dtp, 0, sizeof(dtp));
+    dtp.cbSize = sizeof(dtp);
+
+    SetRect(&rect, 0, 0, 150, 100);
+    heightcheck = DrawTextW(hdc, string_w, -1, &rect, DT_CALCRECT | DT_WORD_ELLIPSIS | DT_MODIFYSTRING);
+    ok(!!wcsstr(string_w, L"..."), "got %s.\n", debugstr_w(string_w));
+
+    wcscpy(string_w, L"A quick brown  fox  jumps over the lazy dog long text");
+    len = wcslen(string_w);
+    replace_wchar(string_w, ' ', 0xf020);
+
+    SetRect(&rect, 0, 0, 150, 100);
+    textheight = DrawTextExW(hdc, string_w, -1, &rect, DT_WORDBREAK | DT_CALCRECT | DT_WORD_ELLIPSIS | DT_MODIFYSTRING, &dtp);
+    ok(!wcsstr(string_w, L"..."), "got %s.\n", debugstr_w(string_w));
+    ok(dtp.uiLengthDrawn == len, "got %d, expected %d\n", dtp.uiLengthDrawn, len);
+    ok(textheight / heightcheck > 1, "got %d.\n", textheight / heightcheck);
+    ok(rect.right <= 150, "got %ld.\n", rect.right);
+
+    wcscpy(string_w, L"A quick brown  fox  jumps over the lazy dog long text");
+    SetRect(&rect2, 0, 0, 150, 100);
+    textheight = DrawTextExW(hdc, string_w, -1, &rect2, DT_WORDBREAK | DT_CALCRECT | DT_WORD_ELLIPSIS | DT_MODIFYSTRING, &dtp);
+    ok(!wcsstr(string_w, L"..."), "got %s.\n", debugstr_w(string_w));
+    ok(dtp.uiLengthDrawn == len, "got %d, expected %d\n", dtp.uiLengthDrawn, len);
+    ok(textheight / heightcheck > 1, "got %d.\n", textheight / heightcheck);
+
+    wcscpy(string_w, L"                                                     ");
+    len = wcslen(string_w);
+    SetRect(&rect, 0, 0, 150, 100);
+    textheight = DrawTextExW(hdc, string_w, -1, &rect, DT_WORDBREAK | DT_CALCRECT | DT_WORD_ELLIPSIS | DT_MODIFYSTRING, &dtp);
+    ok(!wcsstr(string_w, L"..."), "got %s.\n", debugstr_w(string_w));
+    ok(dtp.uiLengthDrawn == len, "got %d, expected %d\n", dtp.uiLengthDrawn, len);
+    ok(textheight / heightcheck > 1, "got %d.\n", textheight / heightcheck);
+    ok(rect.right <= 150, "got %ld.\n", rect.right);
+
+    replace_wchar(string_w, 0x20, 0xf020);
+    SetRect(&rect, 0, 0, 150, 100);
+    textheight = DrawTextExW(hdc, string_w, -1, &rect, DT_WORDBREAK | DT_CALCRECT | DT_WORD_ELLIPSIS | DT_MODIFYSTRING, &dtp);
+    ok(!wcsstr(string_w, L"..."), "got %s.\n", debugstr_w(string_w));
+    ok(dtp.uiLengthDrawn == len, "got %d, expected %d\n", dtp.uiLengthDrawn, len);
+    ok(rect.right <= 150, "got %ld.\n", rect.right);
+
+    SelectObject(hdc, hOldFont);
+    ret = DeleteObject(hFont);
+    ok(ret, "got error %lu\n", GetLastError());
 
     /* Clean up */
     ret = ReleaseDC(hwnd, hdc);
@@ -852,8 +918,6 @@ static void test_CharToOem_OemToChar(void)
     };
     BOOL ret;
     int i;
-    char oem;
-    WCHAR uni, expect;
 
     for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
@@ -916,9 +980,34 @@ static void test_CharToOem_OemToChar(void)
         ok(!lstrcmpW(buf, expected), "test %d: got '%s'\n", i, wine_dbgstr_w(buf));
     }
 
+    for (i = 0; i < 0x10000; i++)
+    {
+        WCHAR uni[4] = {i, 0x23, i, 0x23};
+        unsigned char expect[8], oem[8];
+        int len;
+
+        /* CharToOemBuffW writes up to as many bytes as it reads */
+        for (len = 0; len <= ARRAY_SIZE(uni); len++)
+        {
+            memset(expect, 0, sizeof(expect));
+            WideCharToMultiByte(CP_OEMCP, 0, uni, len, (char*)expect, len * 2, "_", NULL);
+
+            memset(oem, 0, sizeof(oem));
+            ret = CharToOemBuffW(uni, (char*)oem, len);
+            ok(ret, "%04x: returns FALSE\n", i);
+            ok(!memcmp(oem, expect, sizeof(oem)),
+               "char=%04x len=%i: got %02x %02x %02x %02x %02x %02x %02x %02x "
+               "expected %02x %02x %02x %02x %02x %02x %02x %02x\n", i, len,
+               oem[0], oem[1], oem[2], oem[3], oem[4], oem[5], oem[6], oem[7],
+               expect[0], expect[1], expect[2], expect[3], expect[4], expect[5], expect[6], expect[7]);
+        }
+    }
+
     for (i = 0; i < 0x100; i++)
     {
-        oem = i;
+        char oem = i;
+        WCHAR expect, uni;
+
         ret = OemToCharBuffW( &oem, &uni, 1 );
         ok( ret, "%02x: returns FALSE\n", i );
         MultiByteToWideChar( CP_OEMCP, MB_PRECOMPOSED | MB_USEGLYPHCHARS, &oem, 1, &expect, 1 );

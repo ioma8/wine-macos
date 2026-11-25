@@ -23,7 +23,7 @@
  */
 #define MPG123_API_VERSION 49
 /** library patch level at client build time */
-#define MPG123_PATCHLEVEL  3
+#define MPG123_PATCHLEVEL  4
 
 #ifndef MPG123_EXPORT
 /** Defines needed for MS Visual Studio(tm) DLL builds.
@@ -98,7 +98,7 @@
 #ifndef MPG123_PORTABLE_API
 #include <sys/types.h>
 /** A little hack to help MSVC not having ssize_t. */
-#ifdef _MSC_VER
+#ifdef _WIN32
 typedef ptrdiff_t mpg123_ssize_t;
 #else
 typedef ssize_t mpg123_ssize_t;
@@ -325,7 +325,14 @@ enum mpg123_param_flags
 	,MPG123_SEEKBUFFER   = 0x100 /**< 000100000000 Enable small buffer on non-seekable streams to allow some peek-ahead (for better MPEG sync). */
 	,MPG123_FUZZY        = 0x200 /**< 001000000000 Enable fuzzy seeks (guessing byte offsets or using approximate seek points from Xing TOC) */
 	,MPG123_FORCE_FLOAT  = 0x400 /**< 010000000000 Force floating point output (32 or 64 bits depends on mpg123 internal precision). */
-	,MPG123_PLAIN_ID3TEXT = 0x800 /**< 100000000000 Do not translate ID3 text data to UTF-8. ID3 strings will contain the raw text data, with the first byte containing the ID3 encoding code. */
+	,MPG123_PLAIN_ID3TEXT = 0x800 /**< 100000000000 Do not convert ID3 text data.
+	 *  ID3 strings will contain the raw text data, with the first byte
+         *  containing the ID3 encoding code. The bytes appear as in the ID3 tag.
+         *  This means that there is no zero termination, no sanitation.
+         *  You need to explicitly process the data with the given buffer fill
+         *  and encoding value before handing it over to library routins expecting
+         *  zero-terminated byte strings, for example.
+         */
 	,MPG123_IGNORE_STREAMLENGTH = 0x1000 /**< 1000000000000 Ignore any stream length information contained in the stream, which can be contained in a 'TLEN' frame of an ID3v2 tag or a Xing tag */
 	,MPG123_SKIP_ID3V2 = 0x2000 /**< 10 0000 0000 0000 Do not parse ID3v2 tags, just skip them. */
 	,MPG123_IGNORE_INFOFRAME = 0x4000 /**< 100 0000 0000 0000 Do not parse the LAME/Xing info frame, treat it as normal MPEG data. */
@@ -338,7 +345,11 @@ enum mpg123_param_flags
 	 *  the stream is assumed as non-seekable unless overridden.
 	 */
 	,MPG123_FORCE_SEEKABLE = 0x40000 /**< 19th bit: Force the stream to be seekable. */
-	,MPG123_STORE_RAW_ID3  = 0x80000 /**< store raw ID3 data (even if skipping) */
+	,MPG123_STORE_RAW_ID3  = 0x80000 /**< Store raw ID3 data (even if skipping).
+	 *  Before mpg123 1.33.2 (libmpg123 API 49, patchlevel 4), this has to be combined with
+	 *  MPG123_SKIP_ID3 to avoid getting corrupted data due to the ID3 parser inserting
+	 *  encoding bytes for its own convenience.
+	 */
 	,MPG123_FORCE_ENDIAN   = 0x100000 /**< Enforce endianess of output samples.
 	 *  This is not reflected in the format codes. If this flag is set along with
 	 *  MPG123_BIG_ENDIAN, MPG123_ENC_SIGNED16 means s16be, without
@@ -2063,6 +2074,8 @@ MPG123_EXPORT void mpg123_meta_free(mpg123_handle *mh);
 
 /** Point v1 and v2 to existing data structures wich may change on any next read/decode function call.
  *  v1 and/or v2 can be set to NULL when there is no corresponding data.
+ *  I repeat: Access of these pointed-to structures is only valid between mpg123_id3() and
+ *  any other API  call. Make copies if you want to keep things.
  *  \return MPG123_OK on success
  */
 MPG123_EXPORT int mpg123_id3( mpg123_handle *mh

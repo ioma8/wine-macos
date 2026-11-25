@@ -33,7 +33,6 @@
 #endif
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "winternl.h"
 
 #include "file.h"
@@ -117,12 +116,11 @@ void init_tracing_mechanism(void)
 /* initialize the per-process tracing mechanism */
 void init_process_tracing( struct process *process )
 {
-    int pid, ret;
+    mach_msg_return_t ret;
+    int pid;
     struct
     {
         mach_msg_header_t           header;
-        mach_msg_body_t             body;
-        mach_msg_port_descriptor_t  task_port;
         mach_msg_trailer_t          trailer; /* only present on receive */
     } msg;
 
@@ -139,20 +137,16 @@ void init_process_tracing( struct process *process )
 
         /* if anything in the message is invalid, ignore it */
         if (msg.header.msgh_size != offsetof(typeof(msg), trailer)) continue;
-        if (msg.body.msgh_descriptor_count != 1) continue;
-        if (msg.task_port.type != MACH_MSG_PORT_DESCRIPTOR) continue;
-        if (msg.task_port.disposition != MACH_MSG_TYPE_PORT_SEND) continue;
-        if (msg.task_port.name == MACH_PORT_NULL) continue;
-        if (msg.task_port.name == MACH_PORT_DEAD) continue;
+        if (!MACH_PORT_VALID(msg.header.msgh_remote_port)) continue;
 
-        if (!pid_for_task( msg.task_port.name, &pid ))
+        if (!pid_for_task( msg.header.msgh_remote_port, &pid ))
         {
             struct thread *thread = get_thread_from_pid( pid );
 
             if (thread && !thread->process->trace_data)
-                thread->process->trace_data = msg.task_port.name;
+                thread->process->trace_data = msg.header.msgh_remote_port;
             else
-                mach_port_deallocate( mach_task_self(), msg.task_port.name );
+                mach_port_deallocate( mach_task_self(), msg.header.msgh_remote_port );
         }
     }
     /* On Mach thread priorities depend on having the process port available, so
@@ -415,11 +409,14 @@ int read_process_memory( struct process *process, client_ptr_t ptr, data_size_t 
 }
 
 /* write data to a process memory space */
-int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t size, const char *src )
+int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t size, const char *src,
+                          data_size_t *written )
 {
     kern_return_t ret;
     mach_port_t process_port = get_process_port( process );
     mach_vm_offset_t data;
+
+    if (written) *written = 0;
 
     if (!process_port)
     {
@@ -452,7 +449,7 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
         mach_vm_address_t current_address = (mach_vm_address_t)ptr;
         mach_vm_address_t region_address = current_address;
         mach_vm_size_t region_size, write_size;
-        vm_region_basic_info_data_t info;
+        vm_region_basic_info_data_64_t info;
         mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
         mach_port_t object_name;
         data_size_t remaining_size = size;
@@ -528,8 +525,9 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
                     info.protection );
             if (ret != KERN_SUCCESS) break;
 
-            current_address += write_size;
-            remaining_size  -= write_size;
+            if (written) *written += write_size;
+            current_address       += write_size;
+            remaining_size        -= write_size;
         }
 
         task_resume( process_port );
@@ -538,6 +536,7 @@ int write_process_memory( struct process *process, client_ptr_t ptr, data_size_t
 out:
     free( (void *)data );
     mach_set_error( ret );
+    if (ret == KERN_SUCCESS && written) *written = size;
     return (ret == KERN_SUCCESS);
 }
 

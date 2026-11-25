@@ -236,6 +236,9 @@ system_fallback_config[] =
     { "0000-007F, 0080-00FF, 0100-017F, 0180-024F, "
       "0250-02AF, 02B0-02FF, 0300-036F", L"Tahoma" },
 
+    /* Cyrillic, Cyrillic Supplement */
+    { "0400-052F",              L"Tahoma" },
+
     { "0530-058F, FB10-FB1C",   L"Noto Sans Armenian" },
 
     { "0590-05FF, FB1D-FB4F",   L"Noto Sans Hebrew" },
@@ -305,8 +308,24 @@ system_fallback_config[] =
     { "1C00-1C4F",              L"Noto Sans Lepcha" },
     { "1C50-1C7F",              L"Noto Sans Ol Chiki" },
 
+    /* Phonetic Extensions            - 1D00-1D7F
+       Phonetic Extensions Supplement - 1D80-1DBF
+       Latin Extended Additional      - 1E00-1EFF */
+    { "1D00-1D7F, 1D80-1DBF, "
+      "1E00-1EFF",              L"Noto Sans" },
+
+    /* Arrows - 2190-21FF */
+    { "2190-21FF",              L"Noto Sans Symbols" },
+
+    /* Miscellaneous Symbols - 2600-26FF */
+    { "2600-26FF",              L"Noto Sans Symbols2, Noto Sans Symbols 2, Noto Sans Symbols" },
+
     /* Dingbats - 2700-27BF */
-    { "2700-27BF",              L"Noto Sans Symbols2"},
+    { "2700-27BF",              L"Noto Sans Symbols2, Noto Sans Symbols 2" },
+
+    /* Misc Symbols and Arrows - 2B00-2BFF
+       Supplemental Arrows-C   - 1F800-1F8FF */
+    { "2B00-2BFF, 1F800-1F8FF", L"Noto Sans Symbols2, Noto Sans Symbols 2" },
 
     { "2C80-2CFF",              L"Noto Sans Coptic" },
     { "2D30-2D7F",              L"Noto Sans Tifinagh" },
@@ -338,7 +357,7 @@ system_fallback_config[] =
     { "A000-A4CF",              L"Noto Sans Yi" },
     { "A4D0-A4FF",              L"Noto Sans Lisu" },
     { "A500-A63F",              L"Noto Sans Vai" },
-    { "A6A0-A6FF",              L"Noto Sans Bamum" },
+    { "A6A0-A6FF, 16800-16A38", L"Noto Sans Bamum" },
     { "A800-A82F",              L"Noto Sans Syloti Nagri" },
     { "A840-A87F",              L"Noto Sans PhagsPa" },
     { "A880-A8DF",              L"Noto Sans Saurashtra" },
@@ -373,6 +392,8 @@ system_fallback_config[] =
     { "FF00-FFEF",              L"Noto Sans CJK TC", L"zh-Hant" },
     { "FF00-FFEF",              L"Noto Sans CJK KR", L"ko" },
     { "FF00-FFEF",              L"Noto Sans CJK JP" },
+
+    { "1F800-1F8FF",            L"Noto Sans Symbols2, Noto Sans Symbols 2" },
 };
 
 struct text_source_context
@@ -528,14 +549,14 @@ static HRESULT fallback_locale_add_mapping(struct fallback_locale *locale, size_
 
 /* TODO: potentially needs improvement to consider partially matching locale names. */
 static struct fallback_locale * font_fallback_get_locale(const struct list *locales,
-        const WCHAR *locale_name)
+        const WCHAR *locale_name, bool use_neutral)
 {
     struct fallback_locale *locale, *neutral = NULL;
 
     LIST_FOR_EACH_ENTRY(locale, locales, struct fallback_locale, entry)
     {
         if (!wcsicmp(locale->name, locale_name)) return locale;
-        if (!*locale->name) neutral = locale;
+        if (use_neutral && !*locale->name) neutral = locale;
     }
 
     return neutral;
@@ -628,7 +649,7 @@ static const struct fallback_mapping * find_fallback_mapping(const struct fallba
     /* Mapping wasn't found for specific locale, try with neutral one. This will only recurse once. */
     if (*locale->name)
     {
-        locale = font_fallback_get_locale(&fallback->locales, L"");
+        locale = font_fallback_get_locale(&fallback->locales, L"", true);
         mapping = find_fallback_mapping(fallback, locale, ch);
     }
 
@@ -673,7 +694,6 @@ static DWRITE_SCRIPT_ANALYSIS get_char_sa(UINT32 c)
     DWRITE_SCRIPT_ANALYSIS sa;
 
     sa.script = get_char_script(c);
-    sa.shapes = DWRITE_SCRIPT_SHAPES_DEFAULT;
     if ((c <= 0x001f)                          /* C0 controls */
             || (c >= 0x007f && c <= 0x009f)    /* DELETE, C1 controls */
             || (c == 0x00ad)                   /* SOFT HYPHEN */
@@ -921,7 +941,7 @@ static HRESULT analyze_linebreaks(IDWriteTextAnalysisSource *source, UINT32 posi
 
         breakpoints[index].breakConditionBefore = DWRITE_BREAK_CONDITION_NEUTRAL;
         breakpoints[index].breakConditionAfter  = DWRITE_BREAK_CONDITION_NEUTRAL;
-        breakpoints[index].isWhitespace = context.ch < 0xffff ? !!iswspace(context.ch) : 0;
+        breakpoints[index].isWhitespace = opentype_is_whitespace(context.ch);
         breakpoints[index].isSoftHyphen = context.ch == 0x00ad /* Unicode Soft Hyphen */;
         breakpoints[index].padding = 0;
         ++index;
@@ -2520,7 +2540,7 @@ static HRESULT fallback_map_characters(const struct dwrite_fontfallback *fallbac
     if (!locale_name) locale_name = L"";
 
     /* Lookup locale entry once, if specific locale is missing neutral one will be returned. */
-    locale = font_fallback_get_locale(&data->locales, locale_name);
+    locale = font_fallback_get_locale(&data->locales, locale_name, true);
 
     if (FAILED(hr = text_source_context_init(&context, source, position, length))) return hr;
 
@@ -2548,14 +2568,13 @@ static HRESULT fallback_map_characters(const struct dwrite_fontfallback *fallbac
         if (SUCCEEDED(create_matching_font(mapping->collection ? mapping->collection : fallback->systemcollection,
                 mapping->families[i], weight, style, stretch, &IID_IDWriteFont3, (void **)&font)))
         {
-            if (!(mapped = fallback_font_get_supported_length(font, source, position, mapped)))
+            if (!(*ret_length = fallback_font_get_supported_length(font, source, position, mapped)))
             {
                 IDWriteFont3_Release(font);
                 continue;
             }
 
             *ret_font = (IDWriteFont *)font;
-            *ret_length = mapped;
             *scale = mapping->scale;
 
             return S_OK;
@@ -2759,7 +2778,7 @@ static struct fallback_locale * fallback_builder_add_locale(struct dwrite_fontfa
     struct fallback_locale *locale;
 
     if (!locale_name) locale_name = L"";
-    if ((locale = font_fallback_get_locale(&builder->data.locales, locale_name))) return locale;
+    if ((locale = font_fallback_get_locale(&builder->data.locales, locale_name, false))) return locale;
     if (!(locale = calloc(1, sizeof(*locale)))) return NULL;
     lstrcpynW(locale->name, locale_name, ARRAY_SIZE(locale->name));
     list_add_tail(&builder->data.locales, &locale->entry);

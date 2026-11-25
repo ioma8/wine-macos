@@ -142,7 +142,7 @@ static HRESULT WINAPI loader_QueryInterface(IDirectMusicLoader8 *iface, REFIID r
 	if (IsEqualIID (riid, &IID_IUnknown) || 
 	    IsEqualIID (riid, &IID_IDirectMusicLoader) ||
 	    IsEqualIID (riid, &IID_IDirectMusicLoader8)) {
-		IDirectMusicLoader_AddRef (iface);
+		IDirectMusicLoader8_AddRef (iface);
 		*ppobj = This;
 		return S_OK;
 	}
@@ -169,9 +169,15 @@ static ULONG WINAPI loader_Release(IDirectMusicLoader8 *iface)
     TRACE("(%p)->(): new ref = %lu\n", iface, ref);
 
     if (!ref) {
+        struct cache_entry *obj, *obj2;
         unsigned int i;
 
-        IDirectMusicLoader8_ClearCache(iface, &GUID_DirectMusicAllTypes);
+        LIST_FOR_EACH_ENTRY_SAFE(obj, obj2, &This->cache, struct cache_entry, entry) {
+            if ((obj->Desc.dwValidData & DMUS_OBJ_LOADED) && obj->pObject)
+                IDirectMusicObject_Release(obj->pObject);
+            list_remove(&obj->entry);
+            free(obj);
+        }
         for (i = 0; i < ARRAY_SIZE(classes); i++)
             free(This->search_paths[i]);
         free(This);
@@ -439,12 +445,14 @@ static HRESULT WINAPI loader_GetObject(IDirectMusicLoader8 *iface, DMUS_OBJECTDE
             pObjectEntry = calloc(1, sizeof(*pObjectEntry));
             DM_STRUCT_INIT(&pObjectEntry->Desc);
             DMUSIC_CopyDescriptor (&pObjectEntry->Desc, &GotDesc);
+            pObjectEntry->Desc.dwValidData |= DMUS_OBJ_LOADED;
             pObjectEntry->pObject = pObject;
             list_add_head(&This->cache, &pObjectEntry->entry);
         }
         else
         {
             DMUSIC_CopyDescriptor (&pObjectEntry->Desc, &GotDesc);
+            pObjectEntry->Desc.dwValidData |= DMUS_OBJ_LOADED;
             pObjectEntry->pObject = pObject;
         }
         TRACE(": filled in cache entry\n");
@@ -741,10 +749,15 @@ static HRESULT WINAPI loader_ClearCache(IDirectMusicLoader8 *iface, REFGUID clas
     LIST_FOR_EACH_ENTRY_SAFE(obj, obj2, &This->cache, struct cache_entry, entry) {
         if ((IsEqualGUID(class, &GUID_DirectMusicAllTypes) || IsEqualGUID(class, &obj->Desc.guidClass)) &&
             (obj->Desc.dwValidData & DMUS_OBJ_LOADED)) {
-            /* basically, wrap to ReleaseObject for each object found */
-            IDirectMusicLoader8_ReleaseObject(iface, obj->pObject);
-            list_remove(&obj->entry);
-            free(obj);
+            if (obj->pObject) {
+                IDirectMusicObject_Release(obj->pObject);
+                obj->pObject = NULL;
+            }
+            obj->Desc.dwValidData &= ~DMUS_OBJ_LOADED;
+            if (!IsEqualGUID(&GUID_DefaultGMCollection, &obj->Desc.guidObject)) {
+                list_remove(&obj->entry);
+                free(obj);
+            }
         }
     }
 
@@ -861,10 +874,8 @@ static HRESULT WINAPI loader_LoadObjectFromFile(IDirectMusicLoader8 *iface, REFG
 		TRACE(": cannot find file\n");
 		return DMUS_E_LOADER_FAILEDOPEN;
 	}
-	
 	TRACE(": full file path = %s\n", debugstr_w (ObjDesc.wszFileName));
-	
-	return IDirectMusicLoader_GetObject(iface, &ObjDesc, iidInterfaceID, ppObject);
+	return IDirectMusicLoader8_GetObject(iface, &ObjDesc, iidInterfaceID, ppObject);
 }
 
 static const IDirectMusicLoader8Vtbl loader_vtbl =
@@ -929,10 +940,10 @@ HRESULT create_dmloader(REFIID lpcGUID, void **ppobj)
     Desc.guidClass = CLSID_DirectMusicCollection;
     Desc.guidObject = GUID_DefaultGMCollection;
     if (SUCCEEDED(hr = get_default_gm_path(Desc.wszFileName, ARRAY_SIZE(Desc.wszFileName))))
-        hr = IDirectMusicLoader_SetObject(&obj->IDirectMusicLoader8_iface, &Desc);
+        hr = IDirectMusicLoader8_SetObject(&obj->IDirectMusicLoader8_iface, &Desc);
     if (FAILED(hr)) WARN("Failed to load the default collection, hr %#lx\n", hr);
 
-    hr = IDirectMusicLoader_QueryInterface(&obj->IDirectMusicLoader8_iface, lpcGUID, ppobj);
-    IDirectMusicLoader_Release(&obj->IDirectMusicLoader8_iface);
+    hr = IDirectMusicLoader8_QueryInterface(&obj->IDirectMusicLoader8_iface, lpcGUID, ppobj);
+    IDirectMusicLoader8_Release(&obj->IDirectMusicLoader8_iface);
     return hr;
 }

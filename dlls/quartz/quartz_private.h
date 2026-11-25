@@ -34,7 +34,6 @@
 #include "dshow.h"
 #include "dvdmedia.h"
 #include "wine/debug.h"
-#include "wine/heap.h"
 #include "wine/strmbase.h"
 #include "wine/list.h"
 
@@ -55,6 +54,7 @@ HRESULT acm_wrapper_create(IUnknown *outer, IUnknown **out);
 HRESULT async_reader_create(IUnknown *outer, IUnknown **out);
 HRESULT avi_dec_create(IUnknown *outer, IUnknown **out);
 HRESULT avi_splitter_create(IUnknown *outer, IUnknown **out);
+HRESULT color_create(IUnknown *outer, IUnknown **out);
 HRESULT dsound_render_create(IUnknown *outer, IUnknown **out);
 HRESULT filter_graph_create(IUnknown *outer, IUnknown **out);
 HRESULT filter_graph_no_thread_create(IUnknown *outer, IUnknown **out);

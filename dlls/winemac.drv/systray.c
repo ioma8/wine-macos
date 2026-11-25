@@ -26,15 +26,7 @@
 #endif
 
 #include "config.h"
-
 #include "macdrv.h"
-
-#include "windef.h"
-#include "winuser.h"
-#include "shellapi.h"
-
-#include "wine/list.h"
-#include "wine/debug.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(systray);
 
@@ -49,7 +41,7 @@ struct tray_icon
     HICON               image;              /* the image to render */
     WCHAR               tiptext[128];       /* tooltip text */
     DWORD               state;              /* state flags */
-    macdrv_status_item  status_item;
+    WineStatusItem     *status_item;
     UINT                version;
 };
 
@@ -288,8 +280,7 @@ static BOOL notify_owner(struct tray_icon *icon, UINT msg, int x, int y)
     }
 
     TRACE("posting msg 0x%04x to hwnd %p id 0x%x\n", msg, icon->owner, icon->id);
-    if (!NtUserMessageCall(icon->owner, icon->callback_message, wp, lp,
-                           0, NtUserSendNotifyMessage, FALSE) &&
+    if (!send_notify_message(icon->owner, icon->callback_message, wp, lp) &&
         (RtlGetLastWin32Error() == ERROR_INVALID_WINDOW_HANDLE))
     {
         WARN("window %p was destroyed, removing icon 0x%x\n", icon->owner, icon->id);

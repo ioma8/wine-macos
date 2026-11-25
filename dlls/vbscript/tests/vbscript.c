@@ -105,6 +105,9 @@ DEFINE_EXPECT(GetItemInfo_visible);
 DEFINE_EXPECT(GetItemInfo_visible_code);
 DEFINE_EXPECT(GetItemInfo_persistent);
 DEFINE_EXPECT(testCall);
+DEFINE_EXPECT(host_shadow_method);
+DEFINE_EXPECT(host_shadow_propput);
+DEFINE_EXPECT(host_shadow_propget);
 
 DEFINE_GUID(CLSID_VBScript, 0xb54f3741, 0x5b07, 0x11cf, 0xa4,0xb0, 0x00,0xaa,0x00,0x4a,0x55,0xe8);
 DEFINE_GUID(CLSID_VBScriptRegExp, 0x3f4daca4, 0x160d, 0x11d2, 0xa8,0xe9, 0x00,0x10,0x4b,0x36,0x5c,0x9f);
@@ -301,6 +304,57 @@ static const IDispatchVtbl persistent_named_item_vtbl = {
 
 static IDispatch persistent_named_item = { &persistent_named_item_vtbl };
 
+static int shadow_method_dispid_queries, shadow_prop_dispid_queries;
+
+static HRESULT WINAPI shadowing_GetIDsOfNames(IDispatch *iface, REFIID riid, LPOLESTR *names, UINT name_cnt,
+                                              LCID lcid, DISPID *ids)
+{
+    ok(name_cnt == 1, "name_cnt = %u\n", name_cnt);
+    if(!wcscmp(names[0], L"shadowMethod")) {
+        shadow_method_dispid_queries++;
+        *ids = 1;
+        return S_OK;
+    }
+    if(!wcscmp(names[0], L"shadowProp")) {
+        shadow_prop_dispid_queries++;
+        *ids = 2;
+        return S_OK;
+    }
+    return DISP_E_UNKNOWNNAME;
+}
+
+static HRESULT WINAPI shadowing_Invoke(IDispatch *iface, DISPID id, REFIID riid, LCID lcid, WORD flags,
+                                       DISPPARAMS *dp, VARIANT *res, EXCEPINFO *ei, UINT *err)
+{
+    if(id == 1) {
+        CHECK_EXPECT(host_shadow_method);
+        ok(flags == DISPATCH_METHOD, "flags = %x\n", flags);
+        return S_OK;
+    }
+    if(id == 2) {
+        if(flags & DISPATCH_PROPERTYPUT) {
+            CHECK_EXPECT(host_shadow_propput);
+            return S_OK;
+        }
+        CHECK_EXPECT(host_shadow_propget);
+        return S_OK;
+    }
+    ok(0, "unexpected dispid %ld\n", id);
+    return E_FAIL;
+}
+
+static const IDispatchVtbl shadowing_named_item_vtbl = {
+    Dispatch_QueryInterface,
+    Dispatch_AddRef,
+    Dispatch_Release,
+    Dispatch_GetTypeInfoCount,
+    Dispatch_GetTypeInfo,
+    shadowing_GetIDsOfNames,
+    shadowing_Invoke
+};
+
+static IDispatch shadowing_named_item = { &shadowing_named_item_vtbl };
+
 static HRESULT WINAPI ActiveScriptSite_QueryInterface(IActiveScriptSite *iface, REFIID riid, void **ppv)
 {
     *ppv = NULL;
@@ -366,6 +420,11 @@ static HRESULT WINAPI ActiveScriptSite_GetItemInfo(IActiveScriptSite *iface, LPC
         *item_unk = (IUnknown*)&persistent_named_item;
         return S_OK;
     }
+    if(!wcscmp(name, L"shadowingItem")) {
+        IDispatch_AddRef(&shadowing_named_item);
+        *item_unk = (IUnknown*)&shadowing_named_item;
+        return S_OK;
+    }
     ok(0, "unexpected call %s\n", wine_dbgstr_w(name));
     return E_NOTIMPL;
 }
@@ -411,9 +470,20 @@ static HRESULT WINAPI ActiveScriptSite_OnStateChange(IActiveScriptSite *iface, S
     return E_NOTIMPL;
 }
 
+static int last_script_error;
+
 static HRESULT WINAPI ActiveScriptSite_OnScriptError(IActiveScriptSite *iface, IActiveScriptError *pscripterror)
 {
+    EXCEPINFO ei = {0};
+    HRESULT hr;
     CHECK_EXPECT(OnScriptError);
+    hr = IActiveScriptError_GetExceptionInfo(pscripterror, &ei);
+    if(SUCCEEDED(hr)) {
+        last_script_error = HRESULT_CODE(ei.scode);
+        SysFreeString(ei.bstrSource);
+        SysFreeString(ei.bstrDescription);
+        SysFreeString(ei.bstrHelpFile);
+    }
     return E_NOTIMPL;
 }
 
@@ -1484,6 +1554,266 @@ static void test_script_typeinfo(void)
     IActiveScript_Release(vbscript);
 }
 
+static void test_vbdisp_typeinfo(void)
+{
+    IActiveScriptParse *parser;
+    IDispatchEx *obj_disp;
+    IActiveScript *vbscript;
+    ITypeInfo *typeinfo, *typeinfo2;
+    FUNCDESC *funcdesc;
+    VARDESC *vardesc;
+    INT implTypeFlags;
+    UINT count;
+    HREFTYPE reftype;
+    MEMBERID memid;
+    TYPEATTR *attr;
+    HRESULT hr;
+    WCHAR str[64], *names = str;
+    BSTR bstr, bstrs[5];
+    VARIANT var_result;
+    void *obj;
+
+    vbscript = create_vbscript();
+
+    hr = IActiveScript_QueryInterface(vbscript, &IID_IActiveScriptParse, (void**)&parser);
+    ok(hr == S_OK, "Could not get IActiveScriptParse iface: %08lx\n", hr);
+
+    SET_EXPECT(GetLCID);
+    hr = IActiveScript_SetScriptSite(vbscript, &ActiveScriptSite);
+    ok(hr == S_OK, "SetScriptSite failed: %08lx\n", hr);
+    CHECK_CALLED(GetLCID);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hr = IActiveScriptParse_InitNew(parser);
+    ok(hr == S_OK, "InitNew failed: %08lx\n", hr);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hr = IActiveScript_SetScriptState(vbscript, SCRIPTSTATE_CONNECTED);
+    ok(hr == S_OK, "SetScriptState(SCRIPTSTATE_CONNECTED) failed: %08lx\n", hr);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    parse_script(parser,
+        L"class C\n"
+        "    dim x\n"
+        "    public sub method\n    end sub\n"
+        "    public function add(a, b)\n"
+        "        add = a + b\n"
+        "    end function\n"
+        "    public property get val\n"
+        "        val = x\n"
+        "    end property\n"
+        "    public property let val(v)\n"
+        "        x = v\n"
+        "    end property\n"
+        "    public default property get defprop\n"
+        "        defprop = x\n"
+        "    end property\n"
+        "    private function strret\n"
+        "        strret = \"ret\"\n"
+        "    end function\n"
+        "    private sub helper\n    end sub\n"
+        "    private y\n"
+        "end class\n");
+
+    /* SCRIPTTEXT_ISEXPRESSION to obtain the class instance dispatch directly. */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    V_VT(&var_result) = VT_EMPTY;
+    bstr = SysAllocString(L"new C");
+    hr = IActiveScriptParse_ParseScriptText(parser, bstr, NULL, NULL, NULL, 0, 0,
+            SCRIPTTEXT_ISEXPRESSION, &var_result, NULL);
+    SysFreeString(bstr);
+    ok(hr == S_OK, "ParseScriptText(new C) failed: %08lx\n", hr);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+    ok(V_VT(&var_result) == VT_DISPATCH, "Unexpected vt %d\n", V_VT(&var_result));
+
+    if (V_VT(&var_result) != VT_DISPATCH || !V_DISPATCH(&var_result))
+    {
+        skip("Could not get class instance dispatch, skipping vbdisp typeinfo tests\n");
+        VariantClear(&var_result);
+        goto done;
+    }
+    hr = IDispatch_QueryInterface(V_DISPATCH(&var_result), &IID_IDispatchEx, (void**)&obj_disp);
+    ok(hr == S_OK, "QI(IDispatchEx) failed: %08lx\n", hr);
+    VariantClear(&var_result);
+
+    hr = IDispatchEx_GetTypeInfoCount(obj_disp, &count);
+    ok(hr == S_OK, "GetTypeInfoCount failed: %08lx\n", hr);
+    ok(count == 1, "Unexpected count %u\n", count);
+
+    hr = IDispatchEx_GetTypeInfo(obj_disp, 1, LOCALE_USER_DEFAULT, &typeinfo);
+    ok(hr == DISP_E_BADINDEX, "GetTypeInfo(1) returned: %08lx\n", hr);
+
+    hr = IDispatchEx_GetTypeInfo(obj_disp, 0, LOCALE_USER_DEFAULT, &typeinfo);
+    ok(hr == S_OK, "GetTypeInfo failed: %08lx\n", hr);
+    hr = IDispatchEx_GetTypeInfo(obj_disp, 0, LOCALE_USER_DEFAULT, &typeinfo2);
+    ok(hr == S_OK, "GetTypeInfo failed: %08lx\n", hr);
+    ok(typeinfo != typeinfo2, "TypeInfo was not supposed to be shared.\n");
+    ITypeInfo_Release(typeinfo2);
+
+    hr = ITypeInfo_GetDocumentation(typeinfo, MEMBERID_NIL, &bstr, NULL, NULL, NULL);
+    ok(hr == S_OK, "GetDocumentation(MEMBERID_NIL) failed: %08lx\n", hr);
+    ok(!lstrcmpW(bstr, L"C"), "Unexpected class name %s\n", wine_dbgstr_w(bstr));
+    SysFreeString(bstr);
+
+    hr = ITypeInfo_GetTypeAttr(typeinfo, &attr);
+    ok(hr == S_OK, "GetTypeAttr failed: %08lx\n", hr);
+    ok(attr->typekind == TKIND_DISPATCH, "Unexpected typekind %u\n", attr->typekind);
+    /* On Wine, oleaut32 CreateTypeLib2 currently adds 7 phantom inherited
+     * IDispatch methods to TKIND_DISPATCH typeinfos, inflating cFuncs
+     * from 4 to 11 and zeroing cImplTypes. */
+    todo_wine ok(attr->cFuncs == 4, "Unexpected cFuncs %u\n", attr->cFuncs);
+    ok(attr->cVars == 1, "Unexpected cVars %u\n", attr->cVars);
+    todo_wine ok(attr->cImplTypes == 1, "Unexpected cImplTypes %u\n", attr->cImplTypes);
+    ok(attr->wTypeFlags == TYPEFLAG_FDISPATCHABLE, "Unexpected wTypeFlags 0x%x\n", attr->wTypeFlags);
+    ITypeInfo_ReleaseTypeAttr(typeinfo, attr);
+
+    wcscpy(str, L"method");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames(method) failed: %08lx\n", hr);
+    hr = ITypeInfo_GetFuncDesc(typeinfo, 0, &funcdesc);
+    ok(hr == S_OK, "GetFuncDesc failed: %08lx\n", hr);
+    ok(funcdesc->funckind == FUNC_DISPATCH, "Unexpected funckind %u\n", funcdesc->funckind);
+    /* Wine's phantom IDispatch methods occupy slots 0-6, so func[0] is
+     * QueryInterface (invkind reported as PROPERTYGET due to a separate
+     * Wine bug) instead of our 'method'. */
+    todo_wine ok(funcdesc->invkind == INVOKE_FUNC, "Unexpected invkind %u\n", funcdesc->invkind);
+    ITypeInfo_ReleaseFuncDesc(typeinfo, funcdesc);
+
+    wcscpy(str, L"add");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames(add) failed: %08lx\n", hr);
+    hr = ITypeInfo_GetNames(typeinfo, memid, bstrs, ARRAY_SIZE(bstrs), &count);
+    ok(hr == S_OK, "GetNames(add) failed: %08lx\n", hr);
+    ok(count == 3, "Unexpected name count %u\n", count);
+    ok(!lstrcmpW(bstrs[0], L"add"), "Unexpected name[0] %s\n", wine_dbgstr_w(bstrs[0]));
+    ok(!lstrcmpW(bstrs[1], L"a"), "Unexpected name[1] %s\n", wine_dbgstr_w(bstrs[1]));
+    ok(!lstrcmpW(bstrs[2], L"b"), "Unexpected name[2] %s\n", wine_dbgstr_w(bstrs[2]));
+    SysFreeString(bstrs[0]);
+    SysFreeString(bstrs[1]);
+    SysFreeString(bstrs[2]);
+
+    wcscpy(str, L"val");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames(val) failed: %08lx\n", hr);
+    hr = ITypeInfo_GetDocumentation(typeinfo, memid, &bstr, NULL, NULL, NULL);
+    ok(hr == S_OK, "GetDocumentation(val) failed: %08lx\n", hr);
+    ok(!lstrcmpW(bstr, L"val"), "Unexpected name %s\n", wine_dbgstr_w(bstr));
+    SysFreeString(bstr);
+
+    wcscpy(str, L"defprop");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames(defprop) failed: %08lx\n", hr);
+    hr = ITypeInfo_GetDocumentation(typeinfo, memid, &bstr, NULL, NULL, NULL);
+    ok(hr == S_OK, "GetDocumentation(defprop) failed: %08lx\n", hr);
+    ok(!lstrcmpW(bstr, L"defprop"), "Unexpected name %s\n", wine_dbgstr_w(bstr));
+    SysFreeString(bstr);
+
+    hr = ITypeInfo_GetFuncDesc(typeinfo, 4, &funcdesc);
+    ok(hr == TYPE_E_ELEMENTNOTFOUND, "GetFuncDesc(4) returned: %08lx\n", hr);
+
+    hr = ITypeInfo_GetVarDesc(typeinfo, 0, &vardesc);
+    ok(hr == S_OK, "GetVarDesc(0) failed: %08lx\n", hr);
+    ok(vardesc->varkind == VAR_DISPATCH, "Unexpected varkind %u\n", vardesc->varkind);
+    ok(vardesc->elemdescVar.tdesc.vt == VT_VARIANT, "Unexpected var vt %d\n", vardesc->elemdescVar.tdesc.vt);
+    hr = ITypeInfo_GetDocumentation(typeinfo, vardesc->memid, &bstr, NULL, NULL, NULL);
+    ok(hr == S_OK, "GetDocumentation failed: %08lx\n", hr);
+    ok(!lstrcmpW(bstr, L"x"), "Unexpected var name %s\n", wine_dbgstr_w(bstr));
+    SysFreeString(bstr);
+    ITypeInfo_ReleaseVarDesc(typeinfo, vardesc);
+
+    hr = ITypeInfo_GetVarDesc(typeinfo, 1, &vardesc);
+    ok(hr == TYPE_E_ELEMENTNOTFOUND, "GetVarDesc(1) returned: %08lx\n", hr);
+
+    wcscpy(str, L"METHOD");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames(METHOD) failed: %08lx\n", hr);
+    wcscpy(str, L"strret");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == DISP_E_UNKNOWNNAME, "GetIDsOfNames(strret) returned: %08lx\n", hr);
+    wcscpy(str, L"helper");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == DISP_E_UNKNOWNNAME, "GetIDsOfNames(helper) returned: %08lx\n", hr);
+    wcscpy(str, L"y");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == DISP_E_UNKNOWNNAME, "GetIDsOfNames(y) returned: %08lx\n", hr);
+    wcscpy(str, L"nonexistent");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == DISP_E_UNKNOWNNAME, "GetIDsOfNames(nonexistent) returned: %08lx\n", hr);
+
+    wcscpy(str, L"method");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames(method) failed: %08lx\n", hr);
+    hr = ITypeInfo_GetNames(typeinfo, memid, bstrs, ARRAY_SIZE(bstrs), &count);
+    ok(hr == S_OK, "GetNames failed: %08lx\n", hr);
+    ok(count == 1, "Unexpected count %u\n", count);
+    ok(!lstrcmpW(bstrs[0], L"method"), "Unexpected name %s\n", wine_dbgstr_w(bstrs[0]));
+    SysFreeString(bstrs[0]);
+
+    hr = ITypeInfo_GetImplTypeFlags(typeinfo, 0, &implTypeFlags);
+    ok(hr == S_OK, "GetImplTypeFlags failed: %08lx\n", hr);
+    ok(implTypeFlags == 0, "Unexpected implTypeFlags 0x%x\n", implTypeFlags);
+    hr = ITypeInfo_GetImplTypeFlags(typeinfo, 1, &implTypeFlags);
+    ok(hr == TYPE_E_ELEMENTNOTFOUND, "GetImplTypeFlags(1) returned: %08lx\n", hr);
+
+    /* IDispatch parent. Wine's CreateTypeLib2 returns success here
+     * but the resulting reftype isn't usable via GetRefTypeInfo. */
+    hr = ITypeInfo_GetRefTypeOfImplType(typeinfo, 0, &reftype);
+    ok(hr == S_OK, "GetRefTypeOfImplType failed: %08lx\n", hr);
+    if(SUCCEEDED(hr)) {
+        hr = ITypeInfo_GetRefTypeInfo(typeinfo, reftype, &typeinfo2);
+        todo_wine ok(hr == S_OK, "GetRefTypeInfo failed: %08lx\n", hr);
+        if(SUCCEEDED(hr)) {
+            hr = ITypeInfo_GetDocumentation(typeinfo2, MEMBERID_NIL, &bstr, NULL, NULL, NULL);
+            ok(hr == S_OK, "GetDocumentation failed: %08lx\n", hr);
+            ok(!lstrcmpW(bstr, L"IDispatch"), "Unexpected TypeInfo name %s\n", wine_dbgstr_w(bstr));
+            SysFreeString(bstr);
+            ITypeInfo_Release(typeinfo2);
+        }
+    }
+
+    hr = ITypeInfo_GetMops(typeinfo, MEMBERID_NIL, &bstr);
+    ok(hr == S_OK, "GetMops failed: %08lx\n", hr);
+    ok(!bstr, "Unexpected non-null string %s\n", wine_dbgstr_w(bstr));
+
+    obj = (void*)0xdeadbeef;
+    hr = ITypeInfo_CreateInstance(typeinfo, NULL, NULL, &obj);
+    /* Wine returns E_INVALIDARG instead of TYPE_E_BADMODULEKIND. */
+    todo_wine ok(hr == TYPE_E_BADMODULEKIND, "CreateInstance returned: %08lx\n", hr);
+    ok(!obj, "Unexpected non-null obj %p.\n", obj);
+    obj = (void*)0xdeadbeef;
+    wcscpy(str, L"method");
+    hr = ITypeInfo_GetIDsOfNames(typeinfo, &names, 1, &memid);
+    ok(hr == S_OK, "GetIDsOfNames failed: %08lx\n", hr);
+    hr = ITypeInfo_AddressOfMember(typeinfo, memid, INVOKE_FUNC, &obj);
+    ok(hr == TYPE_E_BADMODULEKIND, "AddressOfMember returned: %08lx\n", hr);
+    /* Wine doesn't zero obj on failure. */
+    todo_wine ok(!obj, "Unexpected non-null obj %p.\n", obj);
+    bstr = (BSTR)0xdeadbeef;
+    hr = ITypeInfo_GetDllEntry(typeinfo, memid, INVOKE_FUNC, &bstr, NULL, NULL);
+    ok(hr == TYPE_E_BADMODULEKIND, "GetDllEntry returned: %08lx\n", hr);
+    ok(!bstr, "Unexpected non-null str %p.\n", bstr);
+
+    ITypeInfo_Release(typeinfo);
+    IDispatchEx_Release(obj_disp);
+
+done:
+    IActiveScriptParse_Release(parser);
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hr = IActiveScript_Close(vbscript);
+    ok(hr == S_OK, "Close failed: %08lx\n", hr);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScript_Release(vbscript);
+}
+
 static void test_vbscript(void)
 {
     IActiveScriptParseProcedure2 *parse_proc;
@@ -1962,6 +2292,9 @@ static void test_named_items(void)
     CHECK_CALLED(GetItemInfo_global_code);
 
     script_disp = get_script_dispatch(script, NULL);
+    script_disp2 = get_script_dispatch(script, L"");
+    ok(script_disp == script_disp2, "get_script_dispatch(L\"\") returned different dispatch object than NULL.\n");
+    IDispatchEx_Release(script_disp2);
     script_disp2 = get_script_dispatch(script, L"globalItem");
     ok(script_disp == script_disp2, "get_script_dispatch returned different dispatch objects.\n");
     IDispatchEx_Release(script_disp2);
@@ -2231,6 +2564,45 @@ static void test_named_items(void)
     CHECK_CALLED(OnEnterScript);
     CHECK_CALLED(OnLeaveScript);
 
+    /* GetRef should only find functions in the current named item context */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse,
+        L"set x = GetRef(\"testSub_global\")\n", NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "GetRef(testSub_global) from global context failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(GetIDsOfNames);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse,
+        L"set x = GetRef(\"testSub\")\n", L"codeOnlyItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "GetRef(testSub) from codeOnlyItem context failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    /* GetRef should NOT find functions from other named items' contexts */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnScriptError);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse,
+        L"set x = GetRef(\"testSub\")\n", NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(FAILED(hres), "GetRef(testSub) from global context should fail: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnScriptError);
+    CHECK_CALLED(OnLeaveScript);
+
+    /* GetRef from codeOnlyItem should find global functions (global scope is always accessible) */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(GetIDsOfNames);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse,
+        L"set x = GetRef(\"testSub_global\")\n", L"codeOnlyItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "GetRef(testSub_global) from codeOnlyItem context failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
     IDispatchEx_Release(script_disp2);
     IDispatchEx_Release(script_disp);
 
@@ -2478,6 +2850,541 @@ static void test_named_items(void)
     ok(!ref, "ref = %ld\n", ref);
 }
 
+static void test_named_item_sub_shadowing(void)
+{
+    IActiveScriptParse *parse;
+    IActiveScript *script;
+    HRESULT hres;
+    LONG ref;
+
+    /* A script-side Sub with the same name as a host method shadows the
+     * host for unqualified calls; the host method is reached only via
+     * qualified `item.method` access. */
+
+    script = create_vbscript();
+    hres = IActiveScript_QueryInterface(script, &IID_IActiveScriptParse, (void**)&parse);
+    ok(hres == S_OK, "Could not get IActiveScriptParse: %08lx\n", hres);
+
+    SET_EXPECT(GetLCID);
+    hres = IActiveScript_SetScriptSite(script, &ActiveScriptSite);
+    ok(hres == S_OK, "SetScriptSite failed: %08lx\n", hres);
+    CHECK_CALLED(GetLCID);
+
+    hres = IActiveScript_AddNamedItem(script, L"shadowingItem", SCRIPTITEM_ISVISIBLE);
+    ok(hres == S_OK, "AddNamedItem failed: %08lx\n", hres);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hres = IActiveScriptParse_InitNew(parse);
+    ok(hres == S_OK, "InitNew failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hres = IActiveScript_SetScriptState(script, SCRIPTSTATE_CONNECTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"sub shadowMethod\nend sub\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowMethod\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+    ok(!called_host_shadow_method, "host shadowMethod called for unqualified call\n");
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(host_shadow_method);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowingItem.shadowMethod\n",
+            NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(host_shadow_method);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hres = IActiveScript_Close(script);
+    ok(hres == S_OK, "Close failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScriptParse_Release(parse);
+    ref = IActiveScript_Release(script);
+    ok(!ref, "ref = %ld\n", ref);
+}
+
+static void test_named_item_dim_shadowing(void)
+{
+    IActiveScriptParse *parse;
+    IActiveScript *script;
+    HRESULT hres;
+    LONG ref;
+
+    /* Dim with the same name as a host property shadows the host for
+     * unqualified read/write; the host property is reached only via
+     * qualified `item.prop` access. */
+
+    script = create_vbscript();
+    hres = IActiveScript_QueryInterface(script, &IID_IActiveScriptParse, (void**)&parse);
+    ok(hres == S_OK, "Could not get IActiveScriptParse: %08lx\n", hres);
+
+    SET_EXPECT(GetLCID);
+    hres = IActiveScript_SetScriptSite(script, &ActiveScriptSite);
+    ok(hres == S_OK, "SetScriptSite failed: %08lx\n", hres);
+    CHECK_CALLED(GetLCID);
+
+    hres = IActiveScript_AddNamedItem(script, L"shadowingItem", SCRIPTITEM_ISVISIBLE);
+    ok(hres == S_OK, "AddNamedItem failed: %08lx\n", hres);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hres = IActiveScriptParse_InitNew(parse);
+    ok(hres == S_OK, "InitNew failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hres = IActiveScript_SetScriptState(script, SCRIPTSTATE_CONNECTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"dim shadowProp\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowProp = 5\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+    ok(!called_host_shadow_propput, "host shadowProp PUT called after Dim shadowing\n");
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"dim x\nx = shadowProp\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+    ok(!called_host_shadow_propget, "host shadowProp GET called after Dim shadowing\n");
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(host_shadow_propput);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowingItem.shadowProp = 7\n",
+            NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(host_shadow_propput);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(host_shadow_propget);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"dim y\ny = shadowingItem.shadowProp\n",
+            NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(host_shadow_propget);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hres = IActiveScript_Close(script);
+    ok(hres == S_OK, "Close failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScriptParse_Release(parse);
+    ref = IActiveScript_Release(script);
+    ok(!ref, "ref = %ld\n", ref);
+}
+
+static void test_named_item_no_dim_routes_to_host(void)
+{
+    IActiveScriptParse *parse;
+    IActiveScript *script;
+    HRESULT hres;
+    LONG ref;
+
+    /* Without a Dim declaration, an unqualified assignment to a name the
+     * host exposes routes to the host's IDispatch (the named item is
+     * implicitly consulted in unqualified lookups). */
+
+    script = create_vbscript();
+    hres = IActiveScript_QueryInterface(script, &IID_IActiveScriptParse, (void**)&parse);
+    ok(hres == S_OK, "Could not get IActiveScriptParse: %08lx\n", hres);
+
+    SET_EXPECT(GetLCID);
+    hres = IActiveScript_SetScriptSite(script, &ActiveScriptSite);
+    ok(hres == S_OK, "SetScriptSite failed: %08lx\n", hres);
+    CHECK_CALLED(GetLCID);
+
+    hres = IActiveScript_AddNamedItem(script, L"shadowingItem", SCRIPTITEM_ISVISIBLE);
+    ok(hres == S_OK, "AddNamedItem failed: %08lx\n", hres);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hres = IActiveScriptParse_InitNew(parse);
+    ok(hres == S_OK, "InitNew failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hres = IActiveScript_SetScriptState(script, SCRIPTSTATE_CONNECTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(host_shadow_propput);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowProp = 5\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(host_shadow_propput);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(host_shadow_method);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowMethod\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(host_shadow_method);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hres = IActiveScript_Close(script);
+    ok(hres == S_OK, "Close failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScriptParse_Release(parse);
+    ref = IActiveScript_Release(script);
+    ok(!ref, "ref = %ld\n", ref);
+}
+
+static void test_named_item_dispid_caching(void)
+{
+    IActiveScriptParse *parse;
+    IActiveScript *script;
+    HRESULT hres;
+    LONG ref;
+
+    /* The engine resolves a host member name through GetIDsOfNames once and
+     * reuses the DISPID for subsequent lookups, within and across script
+     * chunks. */
+
+    script = create_vbscript();
+    hres = IActiveScript_QueryInterface(script, &IID_IActiveScriptParse, (void**)&parse);
+    ok(hres == S_OK, "Could not get IActiveScriptParse: %08lx\n", hres);
+
+    SET_EXPECT(GetLCID);
+    hres = IActiveScript_SetScriptSite(script, &ActiveScriptSite);
+    ok(hres == S_OK, "SetScriptSite failed: %08lx\n", hres);
+    CHECK_CALLED(GetLCID);
+
+    hres = IActiveScript_AddNamedItem(script, L"shadowingItem", SCRIPTITEM_ISVISIBLE);
+    ok(hres == S_OK, "AddNamedItem failed: %08lx\n", hres);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hres = IActiveScriptParse_InitNew(parse);
+    ok(hres == S_OK, "InitNew failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hres = IActiveScript_SetScriptState(script, SCRIPTSTATE_CONNECTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    shadow_method_dispid_queries = 0;
+    shadow_prop_dispid_queries = 0;
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    SET_EXPECT(host_shadow_propput);
+    SET_EXPECT(host_shadow_propget);
+    SET_EXPECT(host_shadow_method);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowProp = 5\nx = shadowProp\nshadowMethod\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+    CHECK_CALLED(host_shadow_propput);
+    CHECK_CALLED(host_shadow_propget);
+    CHECK_CALLED(host_shadow_method);
+
+    ok(shadow_prop_dispid_queries == 1, "shadowProp resolved %d times, expected 1\n", shadow_prop_dispid_queries);
+    ok(shadow_method_dispid_queries == 1, "shadowMethod resolved %d times, expected 1\n", shadow_method_dispid_queries);
+
+    /* a later script chunk reuses the cached ids too */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    SET_EXPECT(host_shadow_propput);
+    SET_EXPECT(host_shadow_method);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"shadowProp = 6\nshadowMethod\n",
+            L"shadowingItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+    CHECK_CALLED(host_shadow_propput);
+    CHECK_CALLED(host_shadow_method);
+
+    ok(shadow_prop_dispid_queries == 1, "shadowProp resolved %d times after second chunk, expected 1\n",
+       shadow_prop_dispid_queries);
+    ok(shadow_method_dispid_queries == 1, "shadowMethod resolved %d times after second chunk, expected 1\n",
+       shadow_method_dispid_queries);
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hres = IActiveScript_Close(script);
+    ok(hres == S_OK, "Close failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScriptParse_Release(parse);
+    ref = IActiveScript_Release(script);
+    ok(!ref, "ref = %ld\n", ref);
+}
+
+static void test_const_at_top_level(void)
+{
+    IActiveScriptParse *parse;
+    IActiveScript *script;
+    HRESULT hres;
+    LONG ref;
+
+    /* Top-level const behavior: succeeds when the constant name does not
+     * conflict with a member of the named item, fails (name-redefined,
+     * reported via OnScriptError) when it does. Without a named item
+     * context, top-level const always succeeds. Inside a Sub it works
+     * normally. */
+
+    script = create_vbscript();
+    hres = IActiveScript_QueryInterface(script, &IID_IActiveScriptParse, (void**)&parse);
+    ok(hres == S_OK, "Could not get IActiveScriptParse: %08lx\n", hres);
+
+    SET_EXPECT(GetLCID);
+    hres = IActiveScript_SetScriptSite(script, &ActiveScriptSite);
+    ok(hres == S_OK, "SetScriptSite failed: %08lx\n", hres);
+    CHECK_CALLED(GetLCID);
+
+    hres = IActiveScript_AddNamedItem(script, L"visibleItem", SCRIPTITEM_ISVISIBLE);
+    ok(hres == S_OK, "AddNamedItem failed: %08lx\n", hres);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hres = IActiveScriptParse_InitNew(parse);
+    ok(hres == S_OK, "InitNew failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hres = IActiveScript_SetScriptState(script, SCRIPTSTATE_CONNECTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    /* A top-level const whose name does NOT conflict with anything on the
+     * host succeeds on both. */
+    SET_EXPECT(GetItemInfo_visible);
+    SET_EXPECT(GetIDsOfNames_visible);
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"const NEW_NAME = 99\n", L"visibleItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(GetItemInfo_visible);
+    CHECK_CALLED(GetIDsOfNames_visible);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    /* A top-level const whose name conflicts with a host member fails: the
+     * engine raises a name-redefined error and reports it via
+     * OnScriptError. */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnScriptError);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"const testCall = 1\n", L"visibleItem", NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(FAILED(hres), "ParseScriptText returned: %08lx, expected failure\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnScriptError);
+    CHECK_CALLED(OnLeaveScript);
+
+    /* Without a named item context the parse succeeds on both. */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse, L"const MIN = 1\n", NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    /* const inside a Sub is accepted on both. */
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hres = IActiveScriptParse_ParseScriptText(parse,
+            L"sub useConst\nconst INNER = 2\nif INNER <> 2 then err.raise 500\nend sub\nuseConst\n",
+            NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hres = IActiveScript_Close(script);
+    ok(hres == S_OK, "Close failed: %08lx\n", hres);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScriptParse_Release(parse);
+    ref = IActiveScript_Release(script);
+    ok(!ref, "ref = %ld\n", ref);
+}
+
+/* Cross-parse name redefinition semantics: parse declaration `first`,
+ * then declaration `second` on the same script object. Expect the
+ * second parse to either succeed (S_OK) or report `expected_err` via
+ * OnScriptError. */
+static void run_cross_parse_redef(unsigned line, const WCHAR *first, const WCHAR *second,
+                                  int expected_err)
+{
+    IActiveScriptParse *parser;
+    IActiveScript *vbscript;
+    HRESULT hr;
+
+    vbscript = create_vbscript();
+    hr = IActiveScript_QueryInterface(vbscript, &IID_IActiveScriptParse, (void**)&parser);
+    ok_(__FILE__,line)(hr == S_OK, "QI(IActiveScriptParse) hr=%08lx\n", hr);
+
+    SET_EXPECT(GetLCID);
+    hr = IActiveScript_SetScriptSite(vbscript, &ActiveScriptSite);
+    ok_(__FILE__,line)(hr == S_OK, "SetScriptSite hr=%08lx\n", hr);
+    CHECK_CALLED(GetLCID);
+
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    hr = IActiveScriptParse_InitNew(parser);
+    ok_(__FILE__,line)(hr == S_OK, "InitNew hr=%08lx\n", hr);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+
+    SET_EXPECT(OnStateChange_CONNECTED);
+    hr = IActiveScript_SetScriptState(vbscript, SCRIPTSTATE_CONNECTED);
+    ok_(__FILE__,line)(hr == S_OK, "SetScriptState hr=%08lx\n", hr);
+    CHECK_CALLED(OnStateChange_CONNECTED);
+
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    hr = IActiveScriptParse_ParseScriptText(parser, first, NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    ok_(__FILE__,line)(hr == S_OK, "first parse hr=%08lx for %s\n", hr, wine_dbgstr_w(first));
+    CHECK_CALLED(OnEnterScript);
+    CHECK_CALLED(OnLeaveScript);
+
+    /* The second parse may fire OnEnter/OnLeave (runtime errors) or not
+     * (compile-time errors). Allow them either way and only assert on
+     * the error code. */
+    last_script_error = 0;
+    SET_EXPECT(OnEnterScript);
+    SET_EXPECT(OnLeaveScript);
+    SET_EXPECT(OnScriptError);
+    hr = IActiveScriptParse_ParseScriptText(parser, second, NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    expect_OnEnterScript = called_OnEnterScript = 0;
+    expect_OnLeaveScript = called_OnLeaveScript = 0;
+    expect_OnScriptError = called_OnScriptError = 0;
+    if (expected_err) {
+        ok_(__FILE__,line)(last_script_error == expected_err,
+            "second parse for %s: expected err %d, got err=%d hr=%08lx\n",
+            wine_dbgstr_w(second), expected_err, last_script_error, hr);
+    } else {
+        ok_(__FILE__,line)(hr == S_OK && last_script_error == 0,
+            "second parse for %s: expected S_OK, got hr=%08lx err=%d\n",
+            wine_dbgstr_w(second), hr, last_script_error);
+    }
+
+    SET_EXPECT(OnStateChange_DISCONNECTED);
+    SET_EXPECT(OnStateChange_INITIALIZED);
+    SET_EXPECT(OnStateChange_CLOSED);
+    hr = IActiveScript_Close(vbscript);
+    ok_(__FILE__,line)(hr == S_OK, "Close hr=%08lx\n", hr);
+    CHECK_CALLED(OnStateChange_DISCONNECTED);
+    CHECK_CALLED(OnStateChange_INITIALIZED);
+    CHECK_CALLED(OnStateChange_CLOSED);
+
+    IActiveScriptParse_Release(parser);
+    IActiveScript_Release(vbscript);
+}
+
+#define cross_parse_ok(a, b)     run_cross_parse_redef(__LINE__, a, b, 0)
+#define cross_parse_err(a, b, e) run_cross_parse_redef(__LINE__, a, b, e)
+
+static void test_cross_parse_name_redef(void)
+{
+    /* Native rule:
+     * - Dim is permissive: never errors when re-declared cross-parse.
+     * - Sub/Func re-declare each other and Dim freely; only error when
+     *   the name already names a Class.
+     * - Const errors when the name is already in use by anything.
+     * - Class errors when the name is already in use by anything (any
+     *   kind, including itself).
+     */
+    static const WCHAR dim[]   = L"Dim N\n";
+    static const WCHAR konst[] = L"Const N = 1\n";
+    static const WCHAR sub[]   = L"Sub N\nEnd Sub\n";
+    static const WCHAR func[]  = L"Function N\nEnd Function\n";
+    static const WCHAR cls[]   = L"Class N\nEnd Class\n";
+
+    /* Anything followed by Dim: native always accepts. Wine currently
+     * errors -- needs the over-aggressive var loop dropped. */
+    cross_parse_ok(dim,   dim);
+    cross_parse_ok(konst, dim);
+    cross_parse_ok(sub,   dim);
+    cross_parse_ok(func,  dim);
+    cross_parse_ok(cls,   dim);
+
+    /* Class-then-X: native errors for Const/Sub/Func because the name
+     * is taken. Wine currently allows -- needs added cross-parse check. */
+    cross_parse_err(cls, konst, 1041);
+    cross_parse_err(cls, sub,   1041);
+    cross_parse_err(cls, func,  1041);
+    cross_parse_err     (cls, cls,   1041); /* Wine already catches this */
+
+    /* Cases Wine and native already agree on. */
+    cross_parse_ok      (dim,   sub);
+    cross_parse_ok      (dim,   func);
+    cross_parse_ok      (sub,   sub);
+    cross_parse_ok      (sub,   func);
+    cross_parse_ok      (func,  sub);
+    cross_parse_ok      (func,  func);
+    cross_parse_ok      (konst, sub);
+    cross_parse_ok      (konst, func);
+    cross_parse_err     (dim,   konst, 1041);
+    cross_parse_err     (dim,   cls,   1041);
+    cross_parse_err     (konst, konst, 1041);
+    cross_parse_err     (konst, cls,   1041);
+    cross_parse_err     (sub,   konst, 1041);
+    cross_parse_err     (sub,   cls,   1041);
+    cross_parse_err     (func,  konst, 1041);
+    cross_parse_err     (func,  cls,   1041);
+}
+
 static void test_RegExp(void)
 {
     IRegExp2 *regexp;
@@ -2675,6 +3582,562 @@ static void test_RegExp_Replace(void)
     IRegExp2_Release(regexp);
 }
 
+static IActiveScript *interrupt_script;
+static HANDLE interrupt_ready_event, interrupt_done_event;
+static LONG interrupt_marks, interrupt_timeouts, interrupt_errors, interrupt_enters, interrupt_leaves;
+static SCRIPTTHREADID interrupt_self_stid;
+static DWORD interrupt_self_flags;
+static const EXCEPINFO *interrupt_self_ei;
+static HRESULT interrupt_self_hres, interrupt_callback_hres;
+static EXCEPINFO interrupt_error_ei;
+static ULONG interrupt_error_line;
+static SCODE interrupt_first_scode;
+
+static HRESULT WINAPI interrupt_item_GetIDsOfNames(IDispatch *iface, REFIID riid, LPOLESTR *names, UINT name_cnt,
+                                                   LCID lcid, DISPID *ids)
+{
+    static const WCHAR *methods[] = { L"Ready", L"Mark", L"TimedOut", L"InterruptSelf", L"WaitInterrupted", L"CallBack" };
+    unsigned i;
+
+    for(i = 0; i < ARRAY_SIZE(methods); i++) {
+        if(!_wcsicmp(names[0], methods[i])) {
+            ids[0] = i + 1;
+            return S_OK;
+        }
+    }
+    return DISP_E_UNKNOWNNAME;
+}
+
+static HRESULT WINAPI interrupt_item_Invoke(IDispatch *iface, DISPID id, REFIID riid, LCID lcid, WORD flags,
+                                            DISPPARAMS *dp, VARIANT *res, EXCEPINFO *ei, UINT *err)
+{
+    switch(id) {
+    case 1:
+        SetEvent(interrupt_ready_event);
+        return S_OK;
+    case 2:
+        interrupt_marks++;
+        return S_OK;
+    case 3:
+        interrupt_timeouts++;
+        return S_OK;
+    case 4:
+        interrupt_self_hres = IActiveScript_InterruptScriptThread(interrupt_script, interrupt_self_stid,
+                                                                  interrupt_self_ei, interrupt_self_flags);
+        return S_OK;
+    case 5:
+        SetEvent(interrupt_ready_event);
+        WaitForSingleObject(interrupt_done_event, 10000);
+        return S_OK;
+    case 6: {
+        DISPPARAMS no_args = {0};
+        IDispatch *disp;
+        DISPID inner_id;
+        BSTR str = SysAllocString(L"Inner");
+        IActiveScript_GetScriptDispatch(interrupt_script, NULL, &disp);
+        IDispatch_GetIDsOfNames(disp, &IID_NULL, &str, 1, 0, &inner_id);
+        SysFreeString(str);
+        interrupt_callback_hres = IDispatch_Invoke(disp, inner_id, &IID_NULL, 0, DISPATCH_METHOD, &no_args, NULL, NULL, NULL);
+        IDispatch_Release(disp);
+        return S_OK;
+    }
+    }
+    return E_NOTIMPL;
+}
+
+static const IDispatchVtbl interrupt_item_vtbl = {
+    Dispatch_QueryInterface,
+    Dispatch_AddRef,
+    Dispatch_Release,
+    Dispatch_GetTypeInfoCount,
+    Dispatch_GetTypeInfo,
+    interrupt_item_GetIDsOfNames,
+    interrupt_item_Invoke
+};
+
+static IDispatch interrupt_item = { &interrupt_item_vtbl };
+
+static HRESULT WINAPI interrupt_site_GetLCID(IActiveScriptSite *iface, LCID *plcid)
+{
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI interrupt_site_GetItemInfo(IActiveScriptSite *iface, LPCOLESTR name,
+        DWORD return_mask, IUnknown **item_unk, ITypeInfo **item_ti)
+{
+    *item_unk = (IUnknown*)&interrupt_item;
+    return S_OK;
+}
+
+static HRESULT WINAPI interrupt_site_OnStateChange(IActiveScriptSite *iface, SCRIPTSTATE ssScriptState)
+{
+    return S_OK;
+}
+
+static HRESULT WINAPI interrupt_site_OnScriptError(IActiveScriptSite *iface, IActiveScriptError *error)
+{
+    DWORD cookie;
+    LONG pos;
+
+    interrupt_errors++;
+    SysFreeString(interrupt_error_ei.bstrSource);
+    SysFreeString(interrupt_error_ei.bstrDescription);
+    SysFreeString(interrupt_error_ei.bstrHelpFile);
+    memset(&interrupt_error_ei, 0, sizeof(interrupt_error_ei));
+    IActiveScriptError_GetExceptionInfo(error, &interrupt_error_ei);
+    if(interrupt_errors == 1)
+        interrupt_first_scode = interrupt_error_ei.scode;
+    IActiveScriptError_GetSourcePosition(error, &cookie, &interrupt_error_line, &pos);
+    return S_OK;
+}
+
+static HRESULT WINAPI interrupt_site_OnEnterScript(IActiveScriptSite *iface)
+{
+    interrupt_enters++;
+    return S_OK;
+}
+
+static HRESULT WINAPI interrupt_site_OnLeaveScript(IActiveScriptSite *iface)
+{
+    interrupt_leaves++;
+    return S_OK;
+}
+
+static const IActiveScriptSiteVtbl interrupt_site_vtbl = {
+    ActiveScriptSite_QueryInterface,
+    ActiveScriptSite_AddRef,
+    ActiveScriptSite_Release,
+    interrupt_site_GetLCID,
+    interrupt_site_GetItemInfo,
+    ActiveScriptSite_GetDocVersionString,
+    ActiveScriptSite_OnScriptTerminate,
+    interrupt_site_OnStateChange,
+    interrupt_site_OnScriptError,
+    interrupt_site_OnEnterScript,
+    interrupt_site_OnLeaveScript
+};
+
+static IActiveScriptSite interrupt_site = { &interrupt_site_vtbl };
+
+struct interrupt_args {
+    SCRIPTTHREADID stid;
+    DWORD flags;
+    const EXCEPINFO *ei;
+    HRESULT hres;
+};
+
+static DWORD WINAPI interrupt_thread_proc(void *arg)
+{
+    struct interrupt_args *args = arg;
+
+    WaitForSingleObject(interrupt_ready_event, 10000);
+    args->hres = IActiveScript_InterruptScriptThread(interrupt_script, args->stid, args->ei, args->flags);
+    SetEvent(interrupt_done_event);
+    return 0;
+}
+
+static IActiveScriptParse *create_interrupt_script(void)
+{
+    IActiveScriptParse *parse;
+    HRESULT hres;
+
+    interrupt_script = create_vbscript();
+    hres = IActiveScript_QueryInterface(interrupt_script, &IID_IActiveScriptParse, (void**)&parse);
+    ok(hres == S_OK, "Could not get IActiveScriptParse iface: %08lx\n", hres);
+    hres = IActiveScript_SetScriptSite(interrupt_script, &interrupt_site);
+    ok(hres == S_OK, "SetScriptSite failed: %08lx\n", hres);
+    hres = IActiveScriptParse_InitNew(parse);
+    ok(hres == S_OK, "InitNew failed: %08lx\n", hres);
+    hres = IActiveScript_AddNamedItem(interrupt_script, L"hostItem", SCRIPTITEM_ISVISIBLE);
+    ok(hres == S_OK, "AddNamedItem failed: %08lx\n", hres);
+    hres = IActiveScript_SetScriptState(interrupt_script, SCRIPTSTATE_STARTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    return parse;
+}
+
+static void close_interrupt_script(IActiveScriptParse *parse)
+{
+    IActiveScriptParse_Release(parse);
+    IActiveScript_Close(interrupt_script);
+    IActiveScript_Release(interrupt_script);
+    interrupt_script = NULL;
+}
+
+static void reset_interrupt_counters(void)
+{
+    interrupt_marks = interrupt_timeouts = interrupt_errors = interrupt_enters = interrupt_leaves = 0;
+    interrupt_self_hres = interrupt_callback_hres = 0xdeadbeef;
+    interrupt_error_line = ~0u;
+    SysFreeString(interrupt_error_ei.bstrSource);
+    SysFreeString(interrupt_error_ei.bstrDescription);
+    SysFreeString(interrupt_error_ei.bstrHelpFile);
+    memset(&interrupt_error_ei, 0, sizeof(interrupt_error_ei));
+    ResetEvent(interrupt_ready_event);
+    ResetEvent(interrupt_done_event);
+}
+
+static HRESULT parse_interrupt_script(IActiveScriptParse *parse, const WCHAR *src)
+{
+    BSTR str = SysAllocString(src);
+    HRESULT hres;
+
+    hres = IActiveScriptParse_ParseScriptText(parse, str, NULL, NULL, NULL, 0, 0, 0, NULL, NULL);
+    SysFreeString(str);
+    return hres;
+}
+
+static HRESULT invoke_interrupt_script(const WCHAR *name)
+{
+    DISPPARAMS dp = {0};
+    IDispatchEx *dispex;
+    HRESULT hres;
+    DISPID id;
+
+    dispex = get_script_dispatch(interrupt_script, NULL);
+    get_disp_id(dispex, name, S_OK, &id);
+    hres = IDispatchEx_InvokeEx(dispex, id, 0, DISPATCH_METHOD, &dp, NULL, NULL, NULL);
+    IDispatchEx_Release(dispex);
+    return hres;
+}
+
+static HRESULT run_thread_interrupt(IActiveScriptParse *parse, const WCHAR *src, const WCHAR *func,
+        SCRIPTTHREADID stid, DWORD flags, const EXCEPINFO *ei, HRESULT *interrupt_hres)
+{
+    struct interrupt_args args = { stid, flags, ei, 0xdeadbeef };
+    HANDLE thread;
+    HRESULT hres;
+
+    reset_interrupt_counters();
+    thread = CreateThread(NULL, 0, interrupt_thread_proc, &args, 0, NULL);
+    hres = func ? invoke_interrupt_script(func) : parse_interrupt_script(parse, src);
+    SetEvent(interrupt_ready_event);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    *interrupt_hres = args.hres;
+    return hres;
+}
+
+#define test_interrupt_error(a,b,c,d) _test_interrupt_error(__LINE__,a,b,c,d)
+static void _test_interrupt_error(unsigned line, SCODE scode, WORD wcode, const WCHAR *source, const WCHAR *desc)
+{
+    ok_(__FILE__,line)(interrupt_errors == 1, "OnScriptError called %ld times\n", interrupt_errors);
+    ok_(__FILE__,line)(interrupt_error_ei.scode == scode, "scode = %08lx, expected %08lx\n", interrupt_error_ei.scode, scode);
+    ok_(__FILE__,line)(interrupt_error_ei.wCode == wcode, "wCode = %u, expected %u\n", interrupt_error_ei.wCode, wcode);
+    ok_(__FILE__,line)(!lstrcmpW(interrupt_error_ei.bstrSource, source), "source = %s, expected %s\n",
+                       wine_dbgstr_w(interrupt_error_ei.bstrSource), wine_dbgstr_w(source));
+    ok_(__FILE__,line)(!lstrcmpW(interrupt_error_ei.bstrDescription, desc), "description = %s, expected %s\n",
+                       wine_dbgstr_w(interrupt_error_ei.bstrDescription), wine_dbgstr_w(desc));
+}
+
+#define test_thread_interrupt(a,b,c,d,e,f,g,h) _test_thread_interrupt(__LINE__,a,b,c,d,e,f,g,h)
+static void _test_thread_interrupt(unsigned line, SCRIPTTHREADID stid, DWORD flags, const EXCEPINFO *ei,
+        HRESULT exhres, SCODE scode, WORD wcode, const WCHAR *source, const WCHAR *desc)
+{
+    IActiveScriptParse *parse = create_interrupt_script();
+    HRESULT hres, interrupt_hres;
+
+    hres = run_thread_interrupt(parse, L"hostItem.WaitInterrupted\nhostItem.Mark\n", NULL, stid, flags, ei, &interrupt_hres);
+    ok_(__FILE__,line)(interrupt_hres == exhres, "InterruptScriptThread returned %08lx, expected %08lx\n",
+                       interrupt_hres, exhres);
+    ok_(__FILE__,line)(interrupt_enters == 1, "OnEnterScript called %ld times\n", interrupt_enters);
+    ok_(__FILE__,line)(interrupt_leaves == 1, "OnLeaveScript called %ld times\n", interrupt_leaves);
+    if(exhres == S_OK) {
+        ok_(__FILE__,line)(hres == SCRIPT_E_REPORTED, "ParseScriptText returned %08lx\n", hres);
+        ok_(__FILE__,line)(!interrupt_marks, "script continued after the interrupt\n");
+        _test_interrupt_error(line, scode, wcode, source, desc);
+        ok_(__FILE__,line)(interrupt_error_line == 1, "error line = %lu\n", interrupt_error_line);
+    }else {
+        ok_(__FILE__,line)(hres == S_OK, "ParseScriptText returned %08lx\n", hres);
+        ok_(__FILE__,line)(interrupt_marks == 1, "script did not continue\n");
+        ok_(__FILE__,line)(!interrupt_errors, "OnScriptError called %ld times\n", interrupt_errors);
+    }
+    close_interrupt_script(parse);
+}
+
+#define test_loop_interrupt(a) _test_loop_interrupt(__LINE__,a)
+static void _test_loop_interrupt(unsigned line, const WCHAR *src)
+{
+    IActiveScriptParse *parse = create_interrupt_script();
+    HRESULT hres, interrupt_hres;
+
+    hres = run_thread_interrupt(parse, src, NULL, SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, &interrupt_hres);
+    ok_(__FILE__,line)(interrupt_hres == S_OK, "InterruptScriptThread returned %08lx\n", interrupt_hres);
+    ok_(__FILE__,line)(hres == SCRIPT_E_REPORTED, "ParseScriptText returned %08lx\n", hres);
+    ok_(__FILE__,line)(!interrupt_timeouts, "loop was not interrupted\n");
+    ok_(__FILE__,line)(!interrupt_marks, "script continued after the interrupt\n");
+    _test_interrupt_error(line, E_FAIL, 0, NULL, NULL);
+    close_interrupt_script(parse);
+}
+
+#define test_self_interrupt(a,b,c,d,e,f,g) _test_self_interrupt(__LINE__,a,b,c,d,e,f,g)
+static void _test_self_interrupt(unsigned line, const WCHAR *src, SCRIPTTHREADID stid, DWORD flags,
+        HRESULT exhres, LONG marks, ULONG error_line, BOOL todo_line)
+{
+    IActiveScriptParse *parse = create_interrupt_script();
+    HRESULT hres;
+
+    reset_interrupt_counters();
+    interrupt_self_stid = stid;
+    interrupt_self_flags = flags;
+    hres = parse_interrupt_script(parse, src);
+    ok_(__FILE__,line)(interrupt_self_hres == S_OK, "InterruptScriptThread returned %08lx\n", interrupt_self_hres);
+    ok_(__FILE__,line)(hres == exhres, "ParseScriptText returned %08lx, expected %08lx\n", hres, exhres);
+    ok_(__FILE__,line)(interrupt_marks == marks, "marks = %ld, expected %ld\n", interrupt_marks, marks);
+    if(exhres == S_OK) {
+        ok_(__FILE__,line)(!interrupt_errors, "OnScriptError called %ld times\n", interrupt_errors);
+    }else {
+        _test_interrupt_error(line, E_FAIL, 0, NULL, NULL);
+        todo_wine_if(todo_line)
+        ok_(__FILE__,line)(interrupt_error_line == error_line, "error line = %lu, expected %lu\n",
+                           interrupt_error_line, error_line);
+    }
+    close_interrupt_script(parse);
+}
+
+static void test_interrupt(void)
+{
+    static const SCRIPTTHREADID stids[] = {
+        SCRIPTTHREADID_CURRENT, SCRIPTTHREADID_BASE, SCRIPTTHREADID_ALL, 0, 1234
+    };
+    EXCEPINFO ei_wcode = {0}, ei_desc = {0}, ei_scode = {0}, ei_both = {0}, ei_empty = {0};
+    HRESULT hres, interrupt_hres;
+    IActiveScriptParse *parse;
+    unsigned i;
+
+    interrupt_ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    interrupt_done_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+
+    ei_wcode.wCode = 2345;
+    ei_wcode.bstrSource = SysAllocString(L"interrupt source");
+    ei_wcode.bstrDescription = SysAllocString(L"interrupt description");
+    ei_desc.wCode = 2345;
+    ei_desc.bstrDescription = SysAllocString(L"interrupt description");
+    ei_scode.scode = MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 5);
+    ei_both.wCode = 2345;
+    ei_both.scode = E_FAIL;
+    ei_both.bstrDescription = SysAllocString(L"interrupt description");
+
+    interrupt_script = create_vbscript();
+    hres = IActiveScript_InterruptScriptThread(interrupt_script, SCRIPTTHREADID_BASE, NULL, SCRIPTINTERRUPT_RAISEEXCEPTION);
+    ok(hres == E_UNEXPECTED, "InterruptScriptThread returned %08lx\n", hres);
+    IActiveScript_Release(interrupt_script);
+
+    parse = create_interrupt_script();
+    for(i = 0; i < ARRAY_SIZE(stids); i++) {
+        hres = IActiveScript_InterruptScriptThread(interrupt_script, stids[i], &ei_wcode, SCRIPTINTERRUPT_RAISEEXCEPTION);
+        ok(hres == E_INVALIDARG, "InterruptScriptThread(%Id) returned %08lx\n", (INT_PTR)stids[i], hres);
+    }
+    hres = IActiveScript_InterruptScriptThread(interrupt_script, GetCurrentThreadId(), &ei_wcode, SCRIPTINTERRUPT_RAISEEXCEPTION);
+    ok(hres == E_INVALIDARG, "InterruptScriptThread returned %08lx\n", hres);
+    reset_interrupt_counters();
+    hres = parse_interrupt_script(parse, L"hostItem.Mark\n");
+    ok(hres == S_OK, "ParseScriptText returned %08lx\n", hres);
+    ok(interrupt_marks == 1, "marks = %ld\n", interrupt_marks);
+    hres = IActiveScript_SetScriptState(interrupt_script, SCRIPTSTATE_INITIALIZED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    hres = IActiveScript_InterruptScriptThread(interrupt_script, SCRIPTTHREADID_BASE, NULL, SCRIPTINTERRUPT_RAISEEXCEPTION);
+    ok(hres == E_INVALIDARG, "InterruptScriptThread returned %08lx\n", hres);
+    hres = IActiveScript_Close(interrupt_script);
+    ok(hres == S_OK, "Close failed: %08lx\n", hres);
+    hres = IActiveScript_InterruptScriptThread(interrupt_script, SCRIPTTHREADID_BASE, NULL, SCRIPTINTERRUPT_RAISEEXCEPTION);
+    ok(hres == E_INVALIDARG, "InterruptScriptThread returned %08lx\n", hres);
+    IActiveScriptParse_Release(parse);
+    IActiveScript_Release(interrupt_script);
+
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, &ei_wcode, S_OK,
+                          MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 2345), 0, L"interrupt source", L"interrupt description");
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, &ei_desc, S_OK,
+                          MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 2345), 0, NULL, L"interrupt description");
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, &ei_both, S_OK,
+                          E_FAIL, 2345, NULL, L"interrupt description");
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, &ei_empty, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_BASE, 0, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_DEBUG, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_ALL_FLAGS, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_BASE, 0x80000004, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_ALL, SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(GetCurrentThreadId(), SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, S_OK, E_FAIL, 0, NULL, NULL);
+    test_thread_interrupt(SCRIPTTHREADID_CURRENT, SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, E_INVALIDARG, 0, 0, NULL, NULL);
+    test_thread_interrupt(0, SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, E_INVALIDARG, 0, 0, NULL, NULL);
+    test_thread_interrupt(1234, SCRIPTINTERRUPT_RAISEEXCEPTION, NULL, E_INVALIDARG, 0, 0, NULL, NULL);
+
+    parse = create_interrupt_script();
+    hres = run_thread_interrupt(parse, L"hostItem.WaitInterrupted\nhostItem.Mark\n", NULL, SCRIPTTHREADID_BASE,
+                                SCRIPTINTERRUPT_RAISEEXCEPTION, &ei_scode, &interrupt_hres);
+    ok(interrupt_hres == S_OK, "InterruptScriptThread returned %08lx\n", interrupt_hres);
+    ok(hres == SCRIPT_E_REPORTED, "ParseScriptText returned %08lx\n", hres);
+    ok(interrupt_errors == 1, "OnScriptError called %ld times\n", interrupt_errors);
+    ok(interrupt_error_ei.scode == MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 5), "scode = %08lx\n", interrupt_error_ei.scode);
+    ok(interrupt_error_ei.bstrSource != NULL, "source not set\n");
+    ok(interrupt_error_ei.bstrDescription != NULL, "description not set\n");
+    close_interrupt_script(parse);
+
+    test_loop_interrupt(L"hostItem.Ready\n"
+                        L"t = Timer\n"
+                        L"Do\n"
+                        L"    If Abs(Timer - t) > 3 Then\n"
+                        L"        hostItem.TimedOut\n"
+                        L"        Exit Do\n"
+                        L"    End If\n"
+                        L"Loop\n"
+                        L"hostItem.Mark\n");
+    test_loop_interrupt(L"hostItem.Ready\n"
+                        L"t = Timer\n"
+                        L"While Abs(Timer - t) <= 3\n"
+                        L"Wend\n"
+                        L"hostItem.TimedOut\n"
+                        L"hostItem.Mark\n");
+    test_loop_interrupt(L"hostItem.Ready\n"
+                        L"t = Timer\n"
+                        L"For i = 0 To 1 Step 0\n"
+                        L"    If Abs(Timer - t) > 3 Then\n"
+                        L"        hostItem.TimedOut\n"
+                        L"        Exit For\n"
+                        L"    End If\n"
+                        L"Next\n"
+                        L"hostItem.Mark\n");
+    test_loop_interrupt(L"Function Expired(t)\n"
+                        L"    Expired = Abs(Timer - t) > 3\n"
+                        L"End Function\n"
+                        L"hostItem.Ready\n"
+                        L"t = Timer\n"
+                        L"Do Until Expired(t)\n"
+                        L"Loop\n"
+                        L"hostItem.TimedOut\n"
+                        L"hostItem.Mark\n");
+
+    test_loop_interrupt(L"On Error Resume Next\n"
+                        L"hostItem.WaitInterrupted\n"
+                        L"hostItem.Mark\n");
+    test_loop_interrupt(L"Sub Wait\n"
+                        L"    hostItem.WaitInterrupted\n"
+                        L"    hostItem.Mark\n"
+                        L"End Sub\n"
+                        L"On Error Resume Next\n"
+                        L"Wait\n"
+                        L"hostItem.Mark\n");
+
+    parse = create_interrupt_script();
+    hres = run_thread_interrupt(parse,
+                                L"Sub Inner\n"
+                                L"    hostItem.WaitInterrupted\n"
+                                L"    hostItem.Mark\n"
+                                L"End Sub\n"
+                                L"hostItem.CallBack\n"
+                                L"hostItem.Mark\n",
+                                NULL, SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, &ei_wcode, &interrupt_hres);
+    ok(interrupt_hres == S_OK, "InterruptScriptThread returned %08lx\n", interrupt_hres);
+    ok(hres == SCRIPT_E_REPORTED, "ParseScriptText returned %08lx\n", hres);
+    ok(interrupt_callback_hres == SCRIPT_E_REPORTED, "nested call returned %08lx\n", interrupt_callback_hres);
+    ok(!interrupt_marks, "script continued after the interrupt\n");
+    ok(interrupt_errors == 2, "OnScriptError called %ld times\n", interrupt_errors);
+    ok(interrupt_first_scode == MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 2345), "first scode = %08lx\n", interrupt_first_scode);
+    ok(interrupt_error_ei.scode == MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 2345), "scode = %08lx\n", interrupt_error_ei.scode);
+    ok(!lstrcmpW(interrupt_error_ei.bstrDescription, L"interrupt description"), "description = %s\n",
+       wine_dbgstr_w(interrupt_error_ei.bstrDescription));
+    ok(interrupt_error_line == 5, "error line = %lu\n", interrupt_error_line);
+    ok(interrupt_enters == 2, "OnEnterScript called %ld times\n", interrupt_enters);
+    ok(interrupt_leaves == 2, "OnLeaveScript called %ld times\n", interrupt_leaves);
+    close_interrupt_script(parse);
+
+    test_self_interrupt(L"hostItem.Mark\nhostItem.InterruptSelf\nhostItem.Mark\nhostItem.Mark\n",
+                        SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, SCRIPT_E_REPORTED, 1, 2, FALSE);
+    test_self_interrupt(L"hostItem.Mark\nhostItem.InterruptSelf\nhostItem.Mark\nhostItem.Mark\n",
+                        SCRIPTTHREADID_CURRENT, SCRIPTINTERRUPT_RAISEEXCEPTION, SCRIPT_E_REPORTED, 1, 2, FALSE);
+    test_self_interrupt(L"hostItem.Mark\nhostItem.InterruptSelf\nhostItem.Mark\nhostItem.Mark\n",
+                        SCRIPTTHREADID_ALL, 0, SCRIPT_E_REPORTED, 1, 2, FALSE);
+    test_self_interrupt(L"hostItem.Mark\nhostItem.InterruptSelf\nhostItem.Mark\nhostItem.Mark\n",
+                        GetCurrentThreadId(), 0, SCRIPT_E_REPORTED, 1, 2, FALSE);
+    test_self_interrupt(L"hostItem.Mark\nhostItem.InterruptSelf : hostItem.Mark\n",
+                        SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, SCRIPT_E_REPORTED, 1, 1, FALSE);
+    test_self_interrupt(L"On Error Resume Next\nhostItem.InterruptSelf\nhostItem.InterruptSelf\nhostItem.Mark\n",
+                        SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, SCRIPT_E_REPORTED, 0, 2, FALSE);
+    test_self_interrupt(L"Sub S\nhostItem.InterruptSelf\nhostItem.Mark\nEnd Sub\nS\nhostItem.Mark\n",
+                        SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, SCRIPT_E_REPORTED, 0, 2, FALSE);
+    test_self_interrupt(L"Sub S\nhostItem.InterruptSelf\nEnd Sub\nS\nhostItem.Mark\n",
+                        SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, SCRIPT_E_REPORTED, 0, 2, TRUE);
+    test_self_interrupt(L"hostItem.Mark\nhostItem.InterruptSelf\n",
+                        SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION, S_OK, 1, 0, FALSE);
+
+    parse = create_interrupt_script();
+    reset_interrupt_counters();
+    interrupt_self_stid = SCRIPTTHREADID_BASE;
+    interrupt_self_flags = SCRIPTINTERRUPT_RAISEEXCEPTION;
+    interrupt_self_ei = &ei_wcode;
+    hres = parse_interrupt_script(parse, L"Sub M\nhostItem.Mark\nEnd Sub\nhostItem.InterruptSelf\n");
+    ok(hres == S_OK, "ParseScriptText returned %08lx\n", hres);
+    ok(interrupt_self_hres == S_OK, "InterruptScriptThread returned %08lx\n", interrupt_self_hres);
+    ok(!interrupt_errors, "OnScriptError called %ld times\n", interrupt_errors);
+    interrupt_self_ei = NULL;
+    hres = invoke_interrupt_script(L"M");
+    ok(hres == SCRIPT_E_REPORTED, "InvokeEx returned %08lx\n", hres);
+    ok(!interrupt_marks, "script was executed\n");
+    test_interrupt_error(E_FAIL, 0, NULL, NULL);
+    close_interrupt_script(parse);
+
+    parse = create_interrupt_script();
+    hres = parse_interrupt_script(parse,
+                                  L"Sub Wait\n"
+                                  L"    hostItem.WaitInterrupted\n"
+                                  L"    hostItem.Mark\n"
+                                  L"End Sub\n"
+                                  L"Sub M\n"
+                                  L"    hostItem.Mark\n"
+                                  L"End Sub\n");
+    ok(hres == S_OK, "ParseScriptText failed: %08lx\n", hres);
+    hres = run_thread_interrupt(parse, NULL, L"Wait", SCRIPTTHREADID_BASE, SCRIPTINTERRUPT_RAISEEXCEPTION,
+                                &ei_wcode, &interrupt_hres);
+    ok(interrupt_hres == S_OK, "InterruptScriptThread returned %08lx\n", interrupt_hres);
+    ok(hres == SCRIPT_E_REPORTED, "InvokeEx returned %08lx\n", hres);
+    ok(!interrupt_marks, "script continued after the interrupt\n");
+    test_interrupt_error(MAKE_HRESULT(SEVERITY_ERROR, FACILITY_CONTROL, 2345), 0, L"interrupt source", L"interrupt description");
+    ok(interrupt_error_line == 2, "error line = %lu\n", interrupt_error_line);
+    test_state(interrupt_script, SCRIPTSTATE_STARTED);
+
+    for(i = 0; i < 2; i++) {
+        reset_interrupt_counters();
+        hres = invoke_interrupt_script(L"M");
+        ok(hres == SCRIPT_E_REPORTED, "InvokeEx returned %08lx\n", hres);
+        ok(!interrupt_marks, "script was executed\n");
+        test_interrupt_error(E_FAIL, 0, NULL, NULL);
+        ok(interrupt_error_line == 5, "error line = %lu\n", interrupt_error_line);
+        ok(interrupt_enters == 1, "OnEnterScript called %ld times\n", interrupt_enters);
+        ok(interrupt_leaves == 1, "OnLeaveScript called %ld times\n", interrupt_leaves);
+    }
+
+    reset_interrupt_counters();
+    hres = parse_interrupt_script(parse, L"hostItem.Mark\n");
+    ok(hres == S_OK, "ParseScriptText returned %08lx\n", hres);
+    ok(!interrupt_marks, "script was executed\n");
+    ok(!interrupt_errors, "OnScriptError called %ld times\n", interrupt_errors);
+    ok(!interrupt_enters, "OnEnterScript called %ld times\n", interrupt_enters);
+
+    hres = IActiveScript_InterruptScriptThread(interrupt_script, SCRIPTTHREADID_BASE, NULL, SCRIPTINTERRUPT_RAISEEXCEPTION);
+    ok(hres == E_INVALIDARG, "InterruptScriptThread returned %08lx\n", hres);
+
+    hres = IActiveScript_SetScriptState(interrupt_script, SCRIPTSTATE_STARTED);
+    ok(hres == S_OK, "SetScriptState failed: %08lx\n", hres);
+    hres = parse_interrupt_script(parse, L"hostItem.Mark\n");
+    ok(hres == S_OK, "ParseScriptText returned %08lx\n", hres);
+    ok(interrupt_marks == 2, "marks = %ld\n", interrupt_marks);
+    ok(!interrupt_errors, "OnScriptError called %ld times\n", interrupt_errors);
+    reset_interrupt_counters();
+    hres = invoke_interrupt_script(L"M");
+    ok(hres == S_OK, "InvokeEx returned %08lx\n", hres);
+    ok(interrupt_marks == 1, "marks = %ld\n", interrupt_marks);
+    ok(!interrupt_errors, "OnScriptError called %ld times\n", interrupt_errors);
+    close_interrupt_script(parse);
+
+    SysFreeString(ei_wcode.bstrSource);
+    SysFreeString(ei_wcode.bstrDescription);
+    SysFreeString(ei_desc.bstrDescription);
+    SysFreeString(ei_both.bstrDescription);
+    reset_interrupt_counters();
+    CloseHandle(interrupt_ready_event);
+    CloseHandle(interrupt_done_event);
+}
+
 static BOOL check_vbscript(void)
 {
     IActiveScriptParseProcedure2 *vbscript;
@@ -2700,11 +4163,19 @@ START_TEST(vbscript)
         test_vbscript_initializing();
         test_param_ids();
         test_named_items();
+        test_named_item_sub_shadowing();
+        test_named_item_dim_shadowing();
+        test_named_item_no_dim_routes_to_host();
+        test_named_item_dispid_caching();
+        test_const_at_top_level();
+        test_cross_parse_name_redef();
         test_scriptdisp();
         test_code_persistence();
         test_script_typeinfo();
+        test_vbdisp_typeinfo();
         test_RegExp();
         test_RegExp_Replace();
+        test_interrupt();
     }else {
         win_skip("VBScript engine not available or too old\n");
     }

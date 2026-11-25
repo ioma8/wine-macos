@@ -24,7 +24,6 @@
 #include <stdio.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "wincon.h"
@@ -554,6 +553,15 @@ BOOL WINAPI GetNamedPipeServerSessionId( HANDLE pipe, ULONG *id )
     if (!id) return FALSE;
     *id = NtCurrentTeb()->Peb->SessionId;
     return TRUE;
+}
+
+/***********************************************************************
+ *           GetNamedPipeClientComputerNameA  (KERNEL32.@)
+ */
+BOOL WINAPI GetNamedPipeClientComputerNameA( HANDLE pipe, LPSTR name, ULONG name_length )
+{
+    FIXME( "%p, %p, %lu\n", pipe, name, name_length );
+    return FALSE;
 }
 
 /***********************************************************************

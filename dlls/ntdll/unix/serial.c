@@ -42,6 +42,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#ifdef __APPLE__
+# include <IOKit/serial/ioss.h>
+#endif
 #ifdef HAVE_SYS_FILIO_H
 # include <sys/filio.h>
 #endif
@@ -53,7 +56,6 @@
 #endif
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winternl.h"
 #include "winioctl.h"
@@ -206,8 +208,14 @@ static NTSTATUS get_baud_rate(int fd, SERIAL_BAUD_RATE* sbr)
     case B4000000:	sbr->BaudRate = 4000000; break;
 #endif
     default:
+#ifdef __APPLE__
+        /* IOSSIOSPEED stores arbitrary numeric rates in termios on macOS. */
+        sbr->BaudRate = speed;
+        break;
+#else
         ERR("unknown speed %x\n", speed);
         return STATUS_INVALID_PARAMETER;
+#endif
     }
 #endif
     return STATUS_SUCCESS;
@@ -376,14 +384,15 @@ static NTSTATUS get_properties(int fd, SERIAL_COMMPROP *prop)
     prop->ServiceMask       = SP_SERIALCOMM;
     prop->MaxTxQueue        = 4096;
     prop->MaxRxQueue        = 4096;
-    prop->MaxBaud           = BAUD_115200;
+    prop->MaxBaud           = BAUD_USER;
     prop->ProvSubType       = PST_RS232;
     prop->ProvCapabilities  = PCF_DTRDSR | PCF_PARITY_CHECK | PCF_RTSCTS | PCF_TOTALTIMEOUTS | PCF_INTTIMEOUTS;
     prop->SettableParams    = SP_BAUD | SP_DATABITS | SP_HANDSHAKING |
                               SP_PARITY | SP_PARITY_CHECK | SP_STOPBITS ;
     prop->SettableBaud      = BAUD_075 | BAUD_110 | BAUD_134_5 | BAUD_150 |
                               BAUD_300 | BAUD_600 | BAUD_1200 | BAUD_1800 | BAUD_2400 | BAUD_4800 |
-                              BAUD_9600 | BAUD_19200 | BAUD_38400 | BAUD_57600 | BAUD_115200 ;
+                              BAUD_7200 | BAUD_9600 | BAUD_14400 | BAUD_19200 | BAUD_38400 |
+                              BAUD_56K | BAUD_57600 | BAUD_115200 | BAUD_128K | BAUD_USER ;
     prop->SettableData       = DATABITS_5 | DATABITS_6 | DATABITS_7 | DATABITS_8 ;
     prop->SettableStopParity = STOPBITS_10 | STOPBITS_15 | STOPBITS_20 |
                 PARITY_NONE | PARITY_ODD |PARITY_EVEN | PARITY_MARK | PARITY_SPACE;
@@ -491,6 +500,53 @@ static NTSTATUS purge(int fd, DWORD flags)
     return STATUS_SUCCESS;
 }
 
+#ifdef __APPLE__
+static NTSTATUS set_iossiospeed(int fd, speed_t speed)
+{
+    if (ioctl(fd, IOSSIOSPEED, &speed) == -1)
+    {
+        ERR("ioctl IOSSIOSPEED error '%s'\n", strerror(errno));
+        return errno_to_status( errno );
+    }
+    return STATUS_SUCCESS;
+}
+#endif
+
+#ifndef HAVE_ASM_TERMBITS_H
+static NTSTATUS set_termios_attributes(int fd, const struct termios *port)
+{
+    struct termios attributes = *port;
+    int error;
+
+    if (tcsetattr(fd, TCSANOW, &attributes) == 0) return STATUS_SUCCESS;
+    error = errno;
+
+#ifdef __APPLE__
+    if (error == EINVAL)
+    {
+        speed_t speed = cfgetospeed( port );
+
+        /* IOSSIOSPEED leaves the arbitrary numeric speed in termios. macOS rejects
+         * that value on a later tcsetattr(), so temporarily use a standard speed
+         * while changing the line attributes, then restore the requested speed. */
+        if (speed && speed != B9600)
+        {
+            cfsetispeed( &attributes, B9600 );
+            cfsetospeed( &attributes, B9600 );
+            if (tcsetattr(fd, TCSANOW, &attributes) == 0)
+            {
+                return set_iossiospeed( fd, speed );
+            }
+            error = errno;
+        }
+    }
+#endif
+
+    ERR("tcsetattr error '%s'\n", strerror(error));
+    return errno_to_status( error );
+}
+#endif
+
 static NTSTATUS set_baud_rate(int fd, const SERIAL_BAUD_RATE* sbr)
 {
 #ifdef HAVE_ASM_TERMBITS_H
@@ -593,8 +649,18 @@ static NTSTATUS set_baud_rate(int fd, const SERIAL_BAUD_RATE* sbr)
 #ifdef B4000000
     case 4000000: cfsetospeed( &port, B4000000 ); break;
 #endif
+#ifdef __APPLE__
+    case CBR_14400:  return set_iossiospeed( fd, 14400 );
+    case CBR_56000:  return set_iossiospeed( fd, 56000 );
+    case CBR_57600:  return set_iossiospeed( fd, 57600 );
+    case CBR_115200: return set_iossiospeed( fd, 115200 );
+    case CBR_128000: return set_iossiospeed( fd, 128000 );
+    case CBR_256000: return set_iossiospeed( fd, 256000 );
+#endif
     default:
-#if defined (HAVE_LINUX_SERIAL_H) && defined (TIOCSSERIAL)
+#ifdef __APPLE__
+        return set_iossiospeed( fd, sbr->BaudRate );
+#elif defined (HAVE_LINUX_SERIAL_H) && defined (TIOCSSERIAL)
         {
             struct serial_struct nuts;
             int arby;
@@ -616,17 +682,13 @@ static NTSTATUS set_baud_rate(int fd, const SERIAL_BAUD_RATE* sbr)
             cfsetospeed( &port, B38400 );
         }
         break;
-#else     /* Don't have linux/serial.h or lack TIOCSSERIAL */
+#else     /* Don't have platform-specific support for arbitrary baud rates */
         ERR("baudrate %d\n", sbr->BaudRate);
         return STATUS_NOT_SUPPORTED;
-#endif    /* Don't have linux/serial.h or lack TIOCSSERIAL */
+#endif
     }
     cfsetispeed( &port, cfgetospeed(&port) );
-    if (tcsetattr(fd, TCSANOW, &port) == -1)
-    {
-        ERR("tcsetattr error '%s'\n", strerror(errno));
-        return errno_to_status( errno );
-    }
+    return set_termios_attributes( fd, &port );
 #endif
     return STATUS_SUCCESS;
 }
@@ -716,11 +778,7 @@ static NTSTATUS set_handflow(int fd, const SERIAL_HANDFLOW* shf)
         return errno_to_status( errno );
     }
 #else
-    if (tcsetattr(fd, TCSANOW, &port) == -1)
-    {
-        ERR("tcsetattr error '%s'\n", strerror(errno));
-        return errno_to_status( errno );
-    }
+    return set_termios_attributes( fd, &port );
 #endif
 
     return STATUS_SUCCESS;
@@ -847,11 +905,7 @@ static NTSTATUS set_line_control(int fd, const SERIAL_LINE_CONTROL* slc)
         return errno_to_status( errno );
     }
 #else
-    if (tcsetattr(fd, TCSANOW, &port) == -1)
-    {
-        ERR("tcsetattr error '%s'\n", strerror(errno));
-        return errno_to_status( errno );
-    }
+    return set_termios_attributes( fd, &port );
 #endif
     return STATUS_SUCCESS;
 }
@@ -896,11 +950,7 @@ static NTSTATUS set_special_chars(int fd, const SERIAL_CHARS* sc)
         return errno_to_status( errno );
     }
 #else
-    if (tcsetattr(fd, TCSANOW, &port) == -1)
-    {
-        ERR("tcsetattr error '%s'\n", strerror(errno));
-        return errno_to_status( errno );
-    }
+    return set_termios_attributes( fd, &port );
 #endif
     return STATUS_SUCCESS;
 }
@@ -964,6 +1014,7 @@ typedef struct serial_irq_info
 typedef struct async_commio
 {
     struct async_fileio io;
+    HANDLE              handle;
     DWORD*              events;
     UINT                evtmask;
     UINT                mstat;
@@ -1075,13 +1126,13 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
         return TRUE;
     }
 
-    if (!server_get_unix_fd( commio->io.handle, FILE_READ_DATA | FILE_WRITE_DATA, &fd, &needs_close, NULL, NULL ))
+    if (!server_get_unix_fd( commio->handle, FILE_READ_DATA | FILE_WRITE_DATA, &fd, &needs_close, NULL, NULL ))
     {
         serial_irq_info new_irq_info;
         UINT new_mstat, dummy;
 
         TRACE( "device=%p fd=0x%08x mask=0x%08x buffer=%p irq_info=%p\n",
-               commio->io.handle, fd, commio->evtmask, commio->events, &commio->irq_info );
+               commio->handle, fd, commio->evtmask, commio->events, &commio->irq_info );
 
         /*
          * FIXME:
@@ -1109,7 +1160,7 @@ static BOOL async_wait_proc( void *user, ULONG_PTR *info, unsigned int *status )
             }
             else
             {
-                get_wait_mask( commio->io.handle, &dummy, (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL );
+                get_wait_mask( commio->handle, &dummy, (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL );
                 if (needs_close) close( fd );
                 return FALSE;
             }
@@ -1129,9 +1180,10 @@ static NTSTATUS wait_on( HANDLE handle, int fd, HANDLE event, PIO_APC_ROUTINE ap
     HANDLE wait_handle;
     ULONG options;
 
-    if (!(commio = (async_commio *)alloc_fileio( sizeof(*commio), async_wait_proc, handle )))
+    if (!(commio = (async_commio *)alloc_fileio( sizeof(*commio), async_wait_proc )))
         return STATUS_NO_MEMORY;
 
+    commio->handle = handle;
     commio->events = out_buffer;
     commio->pending_write = 0;
     status = get_wait_mask( handle, &commio->evtmask, (commio->evtmask & EV_TXEMPTY) ? &commio->pending_write : NULL );

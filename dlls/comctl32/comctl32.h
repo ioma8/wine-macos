@@ -34,9 +34,11 @@
 #include "winuser.h"
 #include "winnls.h"
 #include "commctrl.h"
+#if __WINE_COMCTL32_VERSION == 6
 #include "uxtheme.h"
 #include "vsstyle.h"
 #include "vssym32.h"
+#endif
 
 extern HMODULE COMCTL32_hModule;
 extern HBRUSH  COMCTL32_hPattern55AABrush;
@@ -196,6 +198,7 @@ void COMCTL32_DrawInsertMark(HDC hDC, const RECT *lpRect, COLORREF clrInsertMark
 void COMCTL32_EnsureBitmapSize(HBITMAP *pBitmap, int cxMinWidth, int cyMinHeight, COLORREF crBackground);
 void COMCTL32_GetFontMetrics(HFONT hFont, TEXTMETRICW *ptm);
 BOOL COMCTL32_IsReflectedMessage(UINT uMsg);
+BOOL COMCTL32_IsThemed(HWND hwnd);
 LRESULT COMCTL32_NCPaint(HWND hwnd, WPARAM wp, LPARAM lp, const WCHAR *theme_class);
 LRESULT COMCTL32_SetVersion(INT *current_version, INT new_version);
 LRESULT COMCTL32_ThemeChanged(HWND hwnd, const WCHAR *theme_class, BOOL invalidate, BOOL erase);
@@ -241,56 +244,34 @@ BOOL WINAPI MirrorIcon(HICON *phicon1, HICON *phicon2);
 
 HRGN set_control_clipping(HDC hdc, const RECT *rect);
 
-extern void ANIMATE_Register(void);
-extern void ANIMATE_Unregister(void);
+#if __WINE_COMCTL32_VERSION == 6
 extern void BUTTON_Register(void);
 extern void COMBO_Register(void);
-extern void COMBOEX_Register(void);
-extern void COMBOEX_Unregister(void);
 extern void COMBOLBOX_Register(void);
-extern void DATETIME_Register(void);
-extern void DATETIME_Unregister(void);
 extern void EDIT_Register(void);
-extern void FLATSB_Register(void);
-extern void FLATSB_Unregister(void);
-extern void HEADER_Register(void);
-extern void HEADER_Unregister(void);
-extern void HOTKEY_Register(void);
-extern void HOTKEY_Unregister(void);
-extern void IPADDRESS_Register(void);
-extern void IPADDRESS_Unregister(void);
 extern void LISTBOX_Register(void);
-extern void LISTVIEW_Register(void);
-extern void LISTVIEW_Unregister(void);
-extern void MONTHCAL_Register(void);
-extern void MONTHCAL_Unregister(void);
-extern void NATIVEFONT_Register(void);
-extern void NATIVEFONT_Unregister(void);
-extern void PAGER_Register(void);
-extern void PAGER_Unregister(void);
-extern void PROGRESS_Register(void);
-extern void PROGRESS_Unregister(void);
-extern void REBAR_Register(void);
-extern void REBAR_Unregister(void);
-extern void STATIC_Register(void);
-extern void STATUS_Register(void);
-extern void STATUS_Unregister(void);
-#if __WINE_COMCTL32_VERSION == 6
 extern void SYSLINK_Register(void);
-extern void SYSLINK_Unregister(void);
+extern void STATIC_Register(void);
 #endif
+extern void ANIMATE_Register(void);
+extern void COMBOEX_Register(void);
+extern void DATETIME_Register(void);
+extern void HEADER_Register(void);
+extern void HOTKEY_Register(void);
+extern void IPADDRESS_Register(void);
+extern void LISTVIEW_Register(void);
+extern void MONTHCAL_Register(void);
+extern void NATIVEFONT_Register(void);
+extern void PAGER_Register(void);
+extern void PROGRESS_Register(void);
+extern void REBAR_Register(void);
+extern void STATUS_Register(void);
 extern void TAB_Register(void);
-extern void TAB_Unregister(void);
 extern void TOOLBAR_Register(void);
-extern void TOOLBAR_Unregister(void);
 extern void TOOLTIPS_Register(void);
-extern void TOOLTIPS_Unregister(void);
 extern void TRACKBAR_Register(void);
-extern void TRACKBAR_Unregister(void);
 extern void TREEVIEW_Register(void);
-extern void TREEVIEW_Unregister(void);
 extern void UPDOWN_Register(void);
-extern void UPDOWN_Unregister(void);
 
 
 int MONTHCAL_MonthLength(int month, int year);

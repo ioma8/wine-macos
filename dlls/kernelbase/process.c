@@ -22,12 +22,12 @@
 #include <string.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winnls.h"
 #include "wincontypes.h"
 #include "winternl.h"
+#include "processsnapshot.h"
 
 #include "kernelbase.h"
 #include "wine/debug.h"
@@ -64,6 +64,7 @@ static BOOL find_exe_file( const WCHAR *name, WCHAR *buffer, DWORD buflen )
         HANDLE handle = CreateFileW( buffer, GENERIC_READ, FILE_SHARE_READ|FILE_SHARE_DELETE,
                                      NULL, OPEN_EXISTING, 0, 0 );
         if ((ret = (handle != INVALID_HANDLE_VALUE))) CloseHandle( handle );
+        else SetLastError( ERROR_FILE_NOT_FOUND );
     }
     RtlReleasePath( load_path );
     return ret;
@@ -87,6 +88,8 @@ static WCHAR *get_file_name( WCHAR *cmdline, WCHAR *buffer, DWORD buflen )
     if (cmdline[0] == '"' && (p = wcschr( cmdline + 1, '"' )))
     {
         int len = p - cmdline - 1;
+        /* trim spaces in quotes */
+        while (len && cmdline[len] == L' ') len--;
         /* extract the quoted portion as file name */
         if (!(name = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) ))) return NULL;
         memcpy( name, cmdline + 1, len * sizeof(WCHAR) );
@@ -114,15 +117,12 @@ static WCHAR *get_file_name( WCHAR *cmdline, WCHAR *buffer, DWORD buflen )
             ret = cmdline;
             break;
         }
+        if (GetLastError() != ERROR_FILE_NOT_FOUND) break;
         if (!first_space) first_space = pos;
         if (!(*pos++ = *p++)) break;
     }
 
-    if (!ret)
-    {
-        SetLastError( ERROR_FILE_NOT_FOUND );
-    }
-    else if (first_space)  /* build a new command-line with quotes */
+    if (ret && first_space)  /* build a new command-line with quotes */
     {
         if (!(ret = HeapAlloc( GetProcessHeap(), 0, (lstrlenW(cmdline) + 3) * sizeof(WCHAR) )))
             goto done;
@@ -258,9 +258,7 @@ static NTSTATUS create_nt_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBUT
                                    SECURITY_ATTRIBUTES *tsa, DWORD process_flags,
                                    RTL_USER_PROCESS_PARAMETERS *params,
                                    RTL_USER_PROCESS_INFORMATION *info,
-                                   HANDLE parent, USHORT machine,
-                                   const struct proc_thread_attr *handle_list,
-                                   const struct proc_thread_attr *job_list)
+                                   const struct _PROC_THREAD_ATTRIBUTE_LIST *attrs )
 {
     OBJECT_ATTRIBUTES process_attr, thread_attr;
     PS_CREATE_INFO create_info;
@@ -271,86 +269,106 @@ static NTSTATUS create_nt_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBUT
     UINT pos = 0;
 
     if (!params->ImagePathName.Buffer[0]) return STATUS_OBJECT_PATH_NOT_FOUND;
-    status = RtlDosPathNameToNtPathName_U_WithStatus( params->ImagePathName.Buffer, &nameW, NULL, NULL );
-    if (!status)
-    {
-        RtlNormalizeProcessParams( params );
+    if ((status = RtlDosPathNameToNtPathName_U_WithStatus( params->ImagePathName.Buffer, &nameW, NULL, NULL )))
+        return status;
 
-        attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_IMAGE_NAME;
-        attr->Attributes[pos].Size         = nameW.Length;
-        attr->Attributes[pos].ValuePtr     = nameW.Buffer;
+    RtlNormalizeProcessParams( params );
+
+    attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_IMAGE_NAME;
+    attr->Attributes[pos].Size         = nameW.Length;
+    attr->Attributes[pos].ValuePtr     = nameW.Buffer;
+    attr->Attributes[pos].ReturnLength = NULL;
+    pos++;
+    attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_CLIENT_ID;
+    attr->Attributes[pos].Size         = sizeof(info->ClientId);
+    attr->Attributes[pos].ValuePtr     = &info->ClientId;
+    attr->Attributes[pos].ReturnLength = NULL;
+    pos++;
+    attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_IMAGE_INFO;
+    attr->Attributes[pos].Size         = sizeof(info->ImageInformation);
+    attr->Attributes[pos].ValuePtr     = &info->ImageInformation;
+    attr->Attributes[pos].ReturnLength = NULL;
+    pos++;
+    if (token)
+    {
+        attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_TOKEN;
+        attr->Attributes[pos].Size         = sizeof(token);
+        attr->Attributes[pos].ValuePtr     = token;
         attr->Attributes[pos].ReturnLength = NULL;
         pos++;
-        attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_CLIENT_ID;
-        attr->Attributes[pos].Size         = sizeof(info->ClientId);
-        attr->Attributes[pos].ValuePtr     = &info->ClientId;
+    }
+    if (debug)
+    {
+        attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_DEBUG_PORT;
+        attr->Attributes[pos].Size         = sizeof(debug);
+        attr->Attributes[pos].ValuePtr     = debug;
         attr->Attributes[pos].ReturnLength = NULL;
         pos++;
-        attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_IMAGE_INFO;
-        attr->Attributes[pos].Size         = sizeof(info->ImageInformation);
-        attr->Attributes[pos].ValuePtr     = &info->ImageInformation;
-        attr->Attributes[pos].ReturnLength = NULL;
-        pos++;
-        if (parent)
+    }
+
+    if (attrs) for (DWORD i = 0; i < attrs->count; ++i)
+    {
+        switch (attrs->attrs[i].attr)
         {
+        case PROC_THREAD_ATTRIBUTE_PARENT_PROCESS:
+        {
+            HANDLE parent = *(HANDLE *)attrs->attrs[i].value;
+            if (!parent)
+            {
+                status = STATUS_INVALID_HANDLE;
+                goto done;
+            }
             attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_PARENT_PROCESS;
             attr->Attributes[pos].Size         = sizeof(parent);
             attr->Attributes[pos].ValuePtr     = parent;
             attr->Attributes[pos].ReturnLength = NULL;
             pos++;
+            break;
         }
-        if ((process_flags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES) && handle_list)
-        {
-            attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_HANDLE_LIST;
-            attr->Attributes[pos].Size         = handle_list->size;
-            attr->Attributes[pos].ValuePtr     = handle_list->value;
-            attr->Attributes[pos].ReturnLength = NULL;
-            pos++;
-        }
-        if (token)
-        {
-            attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_TOKEN;
-            attr->Attributes[pos].Size         = sizeof(token);
-            attr->Attributes[pos].ValuePtr     = token;
-            attr->Attributes[pos].ReturnLength = NULL;
-            pos++;
-        }
-        if (debug)
-        {
-            attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_DEBUG_PORT;
-            attr->Attributes[pos].Size         = sizeof(debug);
-            attr->Attributes[pos].ValuePtr     = debug;
-            attr->Attributes[pos].ReturnLength = NULL;
-            pos++;
-        }
-        if (job_list)
-        {
+        case PROC_THREAD_ATTRIBUTE_HANDLE_LIST:
+            if (process_flags & PROCESS_CREATE_FLAGS_INHERIT_HANDLES)
+            {
+                attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_HANDLE_LIST;
+                attr->Attributes[pos].Size         = attrs->attrs[i].size;
+                attr->Attributes[pos].ValuePtr     = attrs->attrs[i].value;
+                attr->Attributes[pos].ReturnLength = NULL;
+                pos++;
+            }
+            break;
+        case PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE:
+            break;
+        case PROC_THREAD_ATTRIBUTE_JOB_LIST:
             attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_JOB_LIST;
-            attr->Attributes[pos].Size         = job_list->size;
-            attr->Attributes[pos].ValuePtr     = job_list->value;
+            attr->Attributes[pos].Size         = attrs->attrs[i].size;
+            attr->Attributes[pos].ValuePtr     = attrs->attrs[i].value;
             attr->Attributes[pos].ReturnLength = NULL;
             pos++;
-        }
-        if (machine)
-        {
+            break;
+        case PROC_THREAD_ATTRIBUTE_MACHINE_TYPE:
             attr->Attributes[pos].Attribute    = PS_ATTRIBUTE_MACHINE_TYPE;
-            attr->Attributes[pos].Size         = sizeof(machine);
-            attr->Attributes[pos].Value        = machine;
+            attr->Attributes[pos].Size         = sizeof(USHORT);
+            attr->Attributes[pos].Value        = *(USHORT *)attrs->attrs[i].value;
             attr->Attributes[pos].ReturnLength = NULL;
             pos++;
+            break;
+        default:
+            FIXME("Unsupported attribute %#Ix.\n", attrs->attrs[i].attr);
+            break;
         }
-        attr->TotalLength = offsetof( PS_ATTRIBUTE_LIST, Attributes[pos] );
-
-        InitializeObjectAttributes( &process_attr, NULL, 0, NULL, psa ? psa->lpSecurityDescriptor : NULL );
-        InitializeObjectAttributes( &thread_attr, NULL, 0, NULL, tsa ? tsa->lpSecurityDescriptor : NULL );
-
-        status = NtCreateUserProcess( &info->Process, &info->Thread, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS,
-                                      &process_attr, &thread_attr, process_flags,
-                                      THREAD_CREATE_FLAGS_CREATE_SUSPENDED, params,
-                                      &create_info, attr );
-
-        RtlFreeUnicodeString( &nameW );
     }
+
+    attr->TotalLength = offsetof( PS_ATTRIBUTE_LIST, Attributes[pos] );
+
+    InitializeObjectAttributes( &process_attr, NULL, 0, NULL, psa ? psa->lpSecurityDescriptor : NULL );
+    InitializeObjectAttributes( &thread_attr, NULL, 0, NULL, tsa ? tsa->lpSecurityDescriptor : NULL );
+
+    status = NtCreateUserProcess( &info->Process, &info->Thread, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS,
+                                  &process_attr, &thread_attr, process_flags,
+                                  THREAD_CREATE_FLAGS_CREATE_SUSPENDED, params,
+                                  &create_info, attr );
+
+ done:
+    RtlFreeUnicodeString( &nameW );
     return status;
 }
 
@@ -380,7 +398,7 @@ static NTSTATUS create_vdm_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBU
               winevdm, params->ImagePathName.Buffer, params->CommandLine.Buffer );
     RtlInitUnicodeString( &params->ImagePathName, winevdm );
     RtlInitUnicodeString( &params->CommandLine, newcmdline );
-    status = create_nt_process( token, debug, psa, tsa, flags, params, info, 0, 0, NULL, NULL );
+    status = create_nt_process( token, debug, psa, tsa, flags, params, info, NULL );
     HeapFree( GetProcessHeap(), 0, newcmdline );
     return status;
 }
@@ -409,7 +427,7 @@ static NTSTATUS create_cmd_process( HANDLE token, HANDLE debug, SECURITY_ATTRIBU
     swprintf( newcmdline, len, L"%s /s/c \"%s\"", comspec, params->CommandLine.Buffer );
     RtlInitUnicodeString( &params->ImagePathName, comspec );
     RtlInitUnicodeString( &params->CommandLine, newcmdline );
-    status = create_nt_process( token, debug, psa, tsa, flags, params, info, 0, 0, NULL, NULL );
+    status = create_nt_process( token, debug, psa, tsa, flags, params, info, NULL );
     RtlFreeHeap( GetProcessHeap(), 0, newcmdline );
     return status;
 }
@@ -512,14 +530,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
                                                       const WCHAR *cur_dir, STARTUPINFOW *startup_info,
                                                       PROCESS_INFORMATION *info, HANDLE *new_token )
 {
-    const struct proc_thread_attr *handle_list = NULL, *job_list = NULL;
+    struct _PROC_THREAD_ATTRIBUTE_LIST *attrs = NULL;
     WCHAR name[MAX_PATH];
     WCHAR *p, *tidy_cmdline = cmd_line;
     RTL_USER_PROCESS_PARAMETERS *params = NULL;
     RTL_USER_PROCESS_INFORMATION rtl_info = { 0 };
-    HANDLE parent = 0, debug = 0;
+    HANDLE debug = 0;
     ULONG nt_flags = 0;
-    USHORT machine = 0;
     NTSTATUS status;
 
     /* Process the AppName and/or CmdLine to get module name and path */
@@ -575,55 +592,31 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     }
 
     if (flags & EXTENDED_STARTUPINFO_PRESENT)
-    {
-        struct _PROC_THREAD_ATTRIBUTE_LIST *attrs =
-                (struct _PROC_THREAD_ATTRIBUTE_LIST *)((STARTUPINFOEXW *)startup_info)->lpAttributeList;
-        unsigned int i;
+        attrs = (struct _PROC_THREAD_ATTRIBUTE_LIST *)((STARTUPINFOEXW *)startup_info)->lpAttributeList;
 
-        if (attrs)
+    if (attrs) for (unsigned int i = 0; i < attrs->count; ++i)
+    {
+        switch(attrs->attrs[i].attr)
         {
-            for (i = 0; i < attrs->count; ++i)
+        case PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE:
+        {
+            struct pseudo_console *console = attrs->attrs[i].value;
+            TRACE( "PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE %p reference %p\n",
+                   console, console->reference );
+            params->ConsoleHandle = console->reference;
+            if (!(flags & DETACHED_PROCESS))
             {
-                switch(attrs->attrs[i].attr)
+                params->ConsoleFlags |= 2;
+                /* don't inherit standard handles bound to parent console (but inherit the others) */
+                if (!(startup_info->dwFlags & STARTF_USESTDHANDLES))
                 {
-                    case PROC_THREAD_ATTRIBUTE_PARENT_PROCESS:
-                        parent = *(HANDLE *)attrs->attrs[i].value;
-                        TRACE("PROC_THREAD_ATTRIBUTE_PARENT_PROCESS parent %p.\n", parent);
-                        if (!parent)
-                        {
-                            status = STATUS_INVALID_HANDLE;
-                            goto done;
-                        }
-                        break;
-                    case PROC_THREAD_ATTRIBUTE_EXTENDED_FLAGS:
-                        FIXME("PROC_THREAD_ATTRIBUTE_EXTENDED_FLAGS %lx.\n", *(ULONG *)attrs->attrs[i].value);
-                        break;
-                    case PROC_THREAD_ATTRIBUTE_HANDLE_LIST:
-                        handle_list = &attrs->attrs[i];
-                        TRACE("PROC_THREAD_ATTRIBUTE_HANDLE_LIST handle count %Iu.\n", attrs->attrs[i].size / sizeof(HANDLE));
-                        break;
-                    case PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE:
-                        {
-                            struct pseudo_console *console = attrs->attrs[i].value;
-                            TRACE( "PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE %p reference %p\n",
-                                   console, console->reference );
-                            params->ConsoleHandle = console->reference;
-                            break;
-                        }
-                    case PROC_THREAD_ATTRIBUTE_JOB_LIST:
-                        job_list = &attrs->attrs[i];
-                        TRACE( "PROC_THREAD_ATTRIBUTE_JOB_LIST handle count %Iu.\n",
-                               attrs->attrs[i].size / sizeof(HANDLE) );
-                        break;
-                    case PROC_THREAD_ATTRIBUTE_MACHINE_TYPE:
-                        machine = *(USHORT *)attrs->attrs[i].value;
-                        TRACE( "PROC_THREAD_ATTRIBUTE_MACHINE %x.\n", machine );
-                        break;
-                    default:
-                        FIXME("Unsupported attribute %#Ix.\n", attrs->attrs[i].attr);
-                        break;
+                    if (is_console_handle(params->hStdInput))  params->hStdInput = NULL;
+                    if (is_console_handle(params->hStdOutput)) params->hStdOutput = NULL;
+                    if (is_console_handle(params->hStdError))  params->hStdError = NULL;
                 }
             }
+            break;
+        }
         }
     }
 
@@ -633,7 +626,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     if (flags & CREATE_SUSPENDED) nt_flags |= PROCESS_CREATE_FLAGS_SUSPENDED;
 
     status = create_nt_process( token, debug, process_attr, thread_attr,
-                                nt_flags, params, &rtl_info, parent, machine, handle_list, job_list );
+                                nt_flags, params, &rtl_info, attrs );
     switch (status)
     {
     case STATUS_SUCCESS:
@@ -813,6 +806,38 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetHandleInformation( HANDLE handle, DWORD *flags 
         if (info.ProtectFromClose) *flags |= HANDLE_FLAG_PROTECT_FROM_CLOSE;
     }
     return TRUE;
+}
+
+
+/***********************************************************************
+ *           GetMachineTypeAttributes   (kernelbase.@)
+ */
+HRESULT WINAPI GetMachineTypeAttributes( USHORT machine, MACHINE_ATTRIBUTES *attr )
+{
+    SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION machines[8];
+    HANDLE process = NULL;
+    NTSTATUS status;
+
+    status = NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures2, &process, sizeof(process),
+                                         machines, sizeof(machines), NULL );
+    if (status) return HRESULT_FROM_NT(status);
+
+    *attr = 0;
+
+    for (unsigned int i = 0; machines[i].Machine; i++)
+    {
+        if (machines[i].Machine == machine)
+        {
+            if (machines[i].KernelMode)
+                *attr |= KernelEnabled;
+            if (machines[i].UserMode)
+                *attr |= UserEnabled;
+            if (machines[i].WoW64Container)
+                *attr |= Wow64Container;
+        }
+    }
+
+    return S_OK;
 }
 
 
@@ -1048,7 +1073,7 @@ BOOL WINAPI GetProcessInformation( HANDLE process, PROCESS_INFORMATION_CLASS inf
                 return FALSE;
             }
 
-            status = NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures, &process, sizeof(process),
+            status = NtQuerySystemInformationEx( SystemSupportedProcessorArchitectures2, &process, sizeof(process),
                     machines, sizeof(machines), NULL );
             if (status) return set_ntstatus( status );
 
@@ -1273,7 +1298,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH SetProcessWorkingSetSizeEx( HANDLE process, SIZE_T
 /******************************************************************************
  *           TerminateProcess   (kernelbase.@)
  */
-BOOL WINAPI DECLSPEC_HOTPATCH TerminateProcess( HANDLE handle, DWORD exit_code )
+BOOL WINAPI DECLSPEC_HOTPATCH TerminateProcess( HANDLE handle, UINT exit_code )
 {
     if (!handle)
     {
@@ -1798,6 +1823,12 @@ static inline DWORD validate_proc_thread_attribute( DWORD_PTR attr, SIZE_T size 
     case PROC_THREAD_ATTRIBUTE_MACHINE_TYPE:
         if (size != sizeof(USHORT)) return ERROR_BAD_LENGTH;
         break;
+    case PROC_THREAD_ATTRIBUTE_GROUP_AFFINITY:
+        if (size != sizeof(GROUP_AFFINITY)) return ERROR_BAD_LENGTH;
+        break;
+    case PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY:
+        if (size != sizeof(DWORD)) return ERROR_BAD_LENGTH;
+        break;
     default:
         FIXME( "Unhandled attribute %Iu\n", attr & PROC_THREAD_ATTRIBUTE_NUMBER );
         return ERROR_NOT_SUPPORTED;
@@ -1861,4 +1892,31 @@ void WINAPI DECLSPEC_HOTPATCH DeleteProcThreadAttributeList( struct _PROC_THREAD
 BOOL WINAPI DECLSPEC_HOTPATCH CompareObjectHandles( HANDLE first, HANDLE second )
 {
     return set_ntstatus( NtCompareObjects( first, second ));
+}
+
+/***********************************************************************
+ *           PssQuerySnapshot   (kernelbase.@)
+ */
+DWORD WINAPI PssQuerySnapshot( HPSS handle, PSS_QUERY_INFORMATION_CLASS class, void *buffer, DWORD len )
+{
+    FIXME( "(%p %u %p %lu)\n", handle ,class, buffer, len );
+    return ERROR_NOT_FOUND;
+}
+
+/***********************************************************************
+ *           PssFreeSnapshot   (kernelbase.@)
+ */
+DWORD WINAPI PssFreeSnapshot( HANDLE hprocess, HPSS handle )
+{
+    FIXME( "(%p %p)\n", hprocess , handle );
+    return ERROR_SUCCESS;
+}
+
+/***********************************************************************
+ *           PssCaptureSnapshot   (kernelbase.@)
+ */
+DWORD WINAPI PssCaptureSnapshot( HANDLE hprocess, PSS_CAPTURE_FLAGS flags, DWORD ctx_flags, HPSS *handle )
+{
+    FIXME( "(%p %u %lu %p)\n", hprocess , flags, ctx_flags, handle );
+    return ERROR_NOT_FOUND;
 }

@@ -22,8 +22,12 @@
 
 #include "macdrv_cocoa.h"
 
-#define ERR(...) do { if (macdrv_err_on) LogError(__func__, __VA_ARGS__); } while (false)
-
+/* Internal notification sent on NSApp for display configuration changes. The
+   userInfo contains the two keys, NSNumbers for the effected CGDirectDisplayID
+   and the CGDisplayChangeSummaryFlags from the underlying CG callback. */
+static NSString* const WineDisplayConfigurationChangedNotification = @"WineDisplayConfigurationChanged";
+static NSString* const WineDisplayConfigurationNotificationDisplayIDKey = @"DisplayID";
+static NSString* const WineDisplayConfigurationNotificationFlagsKey = @"Flags";
 
 enum {
     WineApplicationEventWakeQuery,
@@ -48,7 +52,6 @@ enum {
 
     NSMutableArray* keyWindows;
     NSMutableSet* triedWindows;
-    unsigned long windowFocusSerial;
 
     TISInputSourceRef lastKeyboardInputSource;
     TISInputSourceRef lastKeyboardLayoutInputSource;
@@ -113,7 +116,7 @@ enum {
 
     - (void) windowGotFocus:(WineWindow*)window;
 
-    - (BOOL) waitUntilQueryDone:(int*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents;
+    - (BOOL) waitUntilQueryDone:(bool*)done timeout:(NSDate*)timeout processEvents:(BOOL)processEvents;
 
     - (void) noteKey:(uint16_t)keyCode pressed:(BOOL)pressed;
 
@@ -124,6 +127,7 @@ enum {
     - (NSPoint) flippedMouseLocation:(NSPoint)point;
 
     - (WineWindow*) frontWineWindow;
+    - (BOOL) isAnyWineWindowVisible;
     - (void) adjustWindowLevels;
     - (void) updateFullscreenWindows;
 
@@ -144,6 +148,3 @@ enum {
 
 
 void OnMainThreadAsync(dispatch_block_t block);
-
-void LogError(const char* func, NSString* format, ...);
-void LogErrorv(const char* func, NSString* format, va_list args);

@@ -27,7 +27,6 @@
 #include <pthread.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "ntgdi_private.h"
 #include "ntuser_private.h"
 #include "wine/winbase16.h"
@@ -287,10 +286,9 @@ static INT nulldrv_GetDeviceCaps( PHYSDEV dev, INT cap )
     }
 }
 
-static BOOL nulldrv_GetDeviceGammaRamp( PHYSDEV dev, void *ramp )
+static UINT nulldrv_GetDeviceGammaRamp( PHYSDEV dev, void *ramp )
 {
-    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
-    return FALSE;
+    return -1; /* use default implementation */
 }
 
 static DWORD nulldrv_GetFontData( PHYSDEV dev, DWORD table, DWORD offset, LPVOID buffer, DWORD length )
@@ -486,10 +484,9 @@ static void nulldrv_SetDeviceClipping( PHYSDEV dev, HRGN rgn )
 {
 }
 
-static BOOL nulldrv_SetDeviceGammaRamp( PHYSDEV dev, void *ramp )
+static UINT nulldrv_SetDeviceGammaRamp( PHYSDEV dev, void *ramp )
 {
-    RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
-    return FALSE;
+    return -1; /* use default implementation */
 }
 
 static COLORREF nulldrv_SetPixel( PHYSDEV dev, INT x, INT y, COLORREF color )
@@ -671,9 +668,9 @@ static void nulldrv_ReleaseKbdTables( const KBDTABLES *tables )
 {
 }
 
-static UINT nulldrv_ImeProcessKey( HIMC himc, UINT wparam, UINT lparam, const BYTE *state )
+static UINT nulldrv_ImeToAsciiEx( UINT vkey, UINT vsc, const BYTE *state, void *update )
 {
-    return 0;
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 static void nulldrv_NotifyIMEStatus( HWND hwnd, UINT status )
@@ -766,7 +763,7 @@ static BOOL nodrv_CreateWindow( HWND hwnd )
     HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
 
     /* HWND_MESSAGE windows don't need a graphics driver */
-    if (!parent || parent == UlongToHandle( NtUserGetThreadInfo()->msg_window )) return TRUE;
+    if (!parent || parent == get_user_thread_info()->msg_window) return TRUE;
     if (warned++) return FALSE;
 
     ERR_(winediag)( "Application tried to create a window, but no driver could be loaded.\n" );
@@ -810,7 +807,7 @@ static BOOL nulldrv_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update )
                         hdc, rect.left - dx, rect.top - dy, SRCCOPY, 0, 0 );
 }
 
-static void nulldrv_SetCapture( HWND hwnd, UINT flags )
+static void nulldrv_SetCapture( HWND hwnd, UINT flags, HWND previous )
 {
 }
 
@@ -880,6 +877,36 @@ static BOOL nulldrv_GetWindowStateUpdates( HWND hwnd, UINT *state_cmd, UINT *swp
     return FALSE;
 }
 
+static void nulldrv_surface_destroy( struct client_surface *client )
+{
+}
+
+static void nulldrv_surface_detach( struct client_surface *client )
+{
+}
+
+static void nulldrv_surface_update( struct client_surface *client )
+{
+}
+
+static void nulldrv_surface_present( struct client_surface *client, HDC hdc )
+{
+}
+
+static const struct client_surface_funcs nulldrv_surface_funcs =
+{
+    .size = sizeof(struct client_surface),
+    .destroy = nulldrv_surface_destroy,
+    .detach = nulldrv_surface_detach,
+    .update = nulldrv_surface_update,
+    .present = nulldrv_surface_present,
+};
+
+static struct client_surface *nulldrv_CreateClientSurface( HWND hwnd, int pixel_format, BOOL raw )
+{
+    return client_surface_create( &nulldrv_surface_funcs, hwnd, pixel_format, raw );
+}
+
 static BOOL nulldrv_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface )
 {
     return FALSE;
@@ -890,7 +917,7 @@ static void nulldrv_MoveWindowBits( HWND hwnd, const struct window_rects *old_re
 {
 }
 
-static void nulldrv_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags, BOOL fullscreen,
+static void nulldrv_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                                       const struct window_rects *new_rects, struct window_surface *surface )
 {
 }
@@ -898,6 +925,11 @@ static void nulldrv_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_h
 static BOOL nulldrv_SystemParametersInfo( UINT action, UINT int_param, void *ptr_param, UINT flags )
 {
     return FALSE;
+}
+
+static LRESULT nulldrv_WintabProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, void *buffer )
+{
+    return 0;
 }
 
 static UINT nulldrv_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_driver_funcs **driver_funcs )
@@ -1090,17 +1122,17 @@ static const KBDTABLES *loaderdrv_KbdLayerDescriptor( HKL layout )
 
 static void loaderdrv_ReleaseKbdTables( const KBDTABLES *tables )
 {
-    return load_driver()->pReleaseKbdTables( tables );
+    load_driver()->pReleaseKbdTables( tables );
 }
 
-static UINT loaderdrv_ImeProcessKey( HIMC himc, UINT wparam, UINT lparam, const BYTE *state )
+static UINT loaderdrv_ImeToAsciiEx( UINT vkey, UINT vsc,const BYTE *state, void *update )
 {
-    return load_driver()->pImeProcessKey( himc, wparam, lparam, state );
+    return load_driver()->pImeToAsciiEx( vkey, vsc, state, update );
 }
 
 static void loaderdrv_NotifyIMEStatus( HWND hwnd, UINT status )
 {
-    return load_driver()->pNotifyIMEStatus( hwnd, status );
+    load_driver()->pNotifyIMEStatus( hwnd, status );
 }
 
 static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
@@ -1220,9 +1252,19 @@ static void loaderdrv_UpdateLayeredWindow( HWND hwnd, BYTE alpha, UINT flags )
     load_driver()->pUpdateLayeredWindow( hwnd, alpha, flags );
 }
 
+static LRESULT loaderdrv_WintabProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, void *buffer )
+{
+    return load_driver()->pWintabProc( hwnd, msg, wparam, lparam, buffer );
+}
+
 static UINT loaderdrv_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_driver_funcs **driver_funcs )
 {
     return load_driver()->pVulkanInit( version, vulkan_handle, driver_funcs );
+}
+
+static UINT loaderdrv_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs )
+{
+    return load_driver()->pOpenGLInit( version, opengl_funcs, driver_funcs );
 }
 
 static const struct user_driver_funcs lazy_load_driver =
@@ -1240,7 +1282,7 @@ static const struct user_driver_funcs lazy_load_driver =
     loaderdrv_VkKeyScanEx,
     loaderdrv_KbdLayerDescriptor,
     loaderdrv_ReleaseKbdTables,
-    loaderdrv_ImeProcessKey,
+    loaderdrv_ImeToAsciiEx,
     loaderdrv_NotifyIMEStatus,
     loaderdrv_SetIMECompositionRect,
     /* cursor/icon functions */
@@ -1288,15 +1330,18 @@ static const struct user_driver_funcs lazy_load_driver =
     nulldrv_WindowPosChanging,
     nulldrv_GetWindowStyleMasks,
     nulldrv_GetWindowStateUpdates,
+    nulldrv_CreateClientSurface,
     nulldrv_CreateWindowSurface,
     nulldrv_MoveWindowBits,
     nulldrv_WindowPosChanged,
     /* system parameters */
     nulldrv_SystemParametersInfo,
+    /* wintab support */
+    loaderdrv_WintabProc,
     /* vulkan support */
     loaderdrv_VulkanInit,
     /* opengl support */
-    nulldrv_OpenGLInit,
+    loaderdrv_OpenGLInit,
     /* thread management */
     nulldrv_ThreadDetach,
 };
@@ -1342,7 +1387,7 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(VkKeyScanEx);
     SET_USER_FUNC(KbdLayerDescriptor);
     SET_USER_FUNC(ReleaseKbdTables);
-    SET_USER_FUNC(ImeProcessKey);
+    SET_USER_FUNC(ImeToAsciiEx);
     SET_USER_FUNC(NotifyIMEStatus);
     SET_USER_FUNC(SetIMECompositionRect);
     SET_USER_FUNC(DestroyCursorIcon);
@@ -1385,10 +1430,12 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
     SET_USER_FUNC(WindowPosChanging);
     SET_USER_FUNC(GetWindowStyleMasks);
     SET_USER_FUNC(GetWindowStateUpdates);
+    SET_USER_FUNC(CreateClientSurface);
     SET_USER_FUNC(CreateWindowSurface);
     SET_USER_FUNC(MoveWindowBits);
     SET_USER_FUNC(WindowPosChanged);
     SET_USER_FUNC(SystemParametersInfo);
+    SET_USER_FUNC(WintabProc);
     SET_USER_FUNC(VulkanInit);
     SET_USER_FUNC(OpenGLInit);
     SET_USER_FUNC(ThreadDetach);
@@ -1421,33 +1468,4 @@ INT WINAPI NtGdiExtEscape( HDC hdc, WCHAR *driver, int driver_id, INT escape, IN
     ret = physdev->funcs->pExtEscape( physdev, escape, input_size, input, output_size, output );
     release_dc_ptr( dc );
     return ret;
-}
-
-static void nulldrv_surface_destroy( struct client_surface *client )
-{
-}
-
-static void nulldrv_surface_detach( struct client_surface *client )
-{
-}
-
-static void nulldrv_surface_update( struct client_surface *client )
-{
-}
-
-static void nulldrv_surface_present( struct client_surface *client, HDC hdc )
-{
-}
-
-static const struct client_surface_funcs nulldrv_surface_funcs =
-{
-    .destroy = nulldrv_surface_destroy,
-    .detach = nulldrv_surface_detach,
-    .update = nulldrv_surface_update,
-    .present = nulldrv_surface_present,
-};
-
-struct client_surface *nulldrv_client_surface_create( HWND hwnd )
-{
-    return client_surface_create( sizeof(struct client_surface), &nulldrv_surface_funcs, hwnd );
 }

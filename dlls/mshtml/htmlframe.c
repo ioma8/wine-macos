@@ -850,7 +850,7 @@ static void HTMLFrameElement_traverse(DispatchEx *dispex, nsCycleCollectionTrave
 static void HTMLFrameElement_unlink(DispatchEx *dispex)
 {
     HTMLFrameElement *This = frame_from_DispatchEx(dispex);
-    HTMLDOMNode_unlink(dispex);
+    HTMLElement_unlink(dispex);
     unlink_ref(&This->framebase.nsframe);
 }
 
@@ -946,6 +946,7 @@ dispex_static_data_t HTMLFrameElement_dispex = {
     .vtbl         = &HTMLFrameElement_event_target_vtbl.dispex_vtbl,
     .disp_tid     = DispHTMLFrameElement_tid,
     .init_info    = HTMLFrameElement_init_dispex_info,
+    .js_flags     = HOSTOBJ_VOLATILE_PROPS
 };
 
 HRESULT HTMLFrameElement_Create(HTMLDocumentNode *doc, nsIDOMElement *nselem, HTMLElement **elem)
@@ -1296,7 +1297,7 @@ static void HTMLIFrame_traverse(DispatchEx *dispex, nsCycleCollectionTraversalCa
 static void HTMLIFrame_unlink(DispatchEx *dispex)
 {
     HTMLIFrame *This = iframe_from_DispatchEx(dispex);
-    HTMLDOMNode_unlink(dispex);
+    HTMLElement_unlink(dispex);
     unlink_ref(&This->framebase.nsiframe);
 }
 
@@ -1399,6 +1400,7 @@ dispex_static_data_t HTMLIFrameElement_dispex = {
     .disp_tid     = DispHTMLIFrame_tid,
     .iface_tids   = HTMLIFrameElement_iface_tids,
     .init_info    = HTMLIFrameElement_init_dispex_info,
+    .js_flags     = HOSTOBJ_VOLATILE_PROPS
 };
 
 HRESULT HTMLIFrame_Create(HTMLDocumentNode *doc, nsIDOMElement *nselem, HTMLElement **elem)

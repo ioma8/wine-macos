@@ -36,8 +36,6 @@ static NTSTATUS (WINAPI *pNtAllocateReserveObject)( HANDLE *, const OBJECT_ATTRI
 static NTSTATUS (WINAPI *pNtCreateThreadEx)( HANDLE *, ACCESS_MASK, OBJECT_ATTRIBUTES *,
                                              HANDLE, PRTL_THREAD_START_ROUTINE, void *,
                                              ULONG, ULONG_PTR, SIZE_T, SIZE_T, PS_ATTRIBUTE_LIST * );
-static NTSTATUS (WINAPI *pNtAllocateVirtualMemoryEx)(HANDLE, PVOID *, SIZE_T *, ULONG, ULONG,
-                                                     MEM_EXTENDED_PARAMETER *, ULONG);
 static NTSTATUS  (WINAPI *pNtSuspendProcess)(HANDLE process);
 static NTSTATUS  (WINAPI *pNtResumeProcess)(HANDLE process);
 static NTSTATUS  (WINAPI *pNtQueueApcThreadEx)(HANDLE handle, HANDLE reserve_handle, PNTAPCFUNC func,
@@ -45,6 +43,11 @@ static NTSTATUS  (WINAPI *pNtQueueApcThreadEx)(HANDLE handle, HANDLE reserve_han
 static NTSTATUS  (WINAPI *pNtQueueApcThreadEx2)(HANDLE handle, HANDLE reserve_handle, ULONG flags, PNTAPCFUNC func,
                                                 ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
 static NTSTATUS  (WINAPI *pRtlWow64GetProcessMachines)(HANDLE, WORD*, WORD*);
+
+#ifdef __x86_64__
+static NTSTATUS (WINAPI *pNtAllocateVirtualMemoryEx)(HANDLE, PVOID *, SIZE_T *, ULONG, ULONG,
+                                                     MEM_EXTENDED_PARAMETER *, ULONG);
+#endif
 
 static int * (CDECL *p_errno)(void);
 
@@ -57,13 +60,16 @@ static void init_function_pointers(void)
     hdll = GetModuleHandleA( "ntdll.dll" );
     GET_FUNC( NtAllocateReserveObject );
     GET_FUNC( NtCreateThreadEx );
-    GET_FUNC( NtAllocateVirtualMemoryEx );
     GET_FUNC( NtSuspendProcess );
     GET_FUNC( NtQueueApcThreadEx );
     GET_FUNC( NtQueueApcThreadEx2 );
     GET_FUNC( NtResumeProcess );
     GET_FUNC( RtlWow64GetProcessMachines );
     GET_FUNC( _errno );
+
+#ifdef __x86_64__
+    GET_FUNC( NtAllocateVirtualMemoryEx );
+#endif
 
     hdll = GetModuleHandleA( "kernel32.dll" );
     GET_FUNC( IsWow64Process );
@@ -270,6 +276,59 @@ static void test_NtCreateUserProcess(void)
     CloseHandle( thread );
 }
 
+static void terminate_subprocess( int phase )
+{
+    NTSTATUS status;
+
+    switch (phase)
+    {
+    case 1:
+        status = NtTerminateProcess( NULL, 0xdead );
+        ok( !status, "NtTerminateProcess failed: %#lx\n", status );
+        NtTerminateProcess( NULL, 2 );
+        break;
+    case 2:
+        status = NtTerminateProcess( NULL, 2 );
+        ok( !status, "NtTerminateProcess failed: %#lx\n", status );
+        NtTerminateProcess( GetCurrentProcess(), 0xdead );
+        break;
+    default:
+        NtTerminateProcess( GetCurrentProcess(), 0xdead );
+        break;
+    }
+
+    ok( 0, "NtTerminateProcess should not return\n" );
+}
+
+static void test_NtTerminateProcess(void)
+{
+    char **argv;
+    BOOL res;
+    int i;
+
+    winetest_get_mainargs( &argv );
+
+    for (i = 0; i < 3; i++)
+    {
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi;
+        char cmdline[MAX_PATH];
+        DWORD exit_code, ret;
+
+        sprintf( cmdline, "%s %s terminate %d", argv[0], argv[1], i );
+
+        res = CreateProcessA( NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi );
+        ok( res, "CreateProcessA failed: %lu\n", GetLastError() );
+
+        ret = WaitForSingleObject( pi.hProcess, 10000 );
+        ok( ret == 0, "wait failed %lx\n", ret );
+        GetExitCodeProcess( pi.hProcess, &exit_code );
+        ok( exit_code == 0xdead, "wrong exit code %lx\n", exit_code );
+        CloseHandle( pi.hProcess );
+        CloseHandle( pi.hThread );
+    }
+}
+
 static void CALLBACK test_thread_bypass_process_freeze_proc(void *param)
 {
     pNtSuspendProcess(NtCurrentProcess());
@@ -304,11 +363,8 @@ static void test_thread_bypass_process_freeze(void)
     CloseHandle( thread );
 }
 
-static int apc_count;
-
 static void CALLBACK apc_func( ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3 )
 {
-    ++apc_count;
 }
 
 static void test_NtQueueApcThreadEx(void)
@@ -516,6 +572,9 @@ static void test_arm64_skip_loader_init(void)
 
 START_TEST(thread)
 {
+    char **argv;
+    int argc;
+
     init_function_pointers();
 
     if (!pIsWow64Process || !pIsWow64Process( GetCurrentProcess(), &is_wow64 )) is_wow64 = FALSE;
@@ -538,10 +597,18 @@ START_TEST(thread)
         if (is_arm64_native_machine) test_arm64_skip_loader_init();
     }
 
+    argc = winetest_get_mainargs( &argv );
+    if (argc > 3 && !strcmp( argv[2], "terminate" ))
+    {
+        terminate_subprocess( atoi( argv[3] ));
+        return;
+    }
+
     test_dbg_hidden_thread_creation();
     test_unique_teb();
     test_errno();
     test_NtCreateUserProcess();
+    test_NtTerminateProcess();
     test_thread_bypass_process_freeze();
     test_NtQueueApcThreadEx();
     test_skip_thread_attach();

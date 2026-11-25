@@ -21,7 +21,6 @@
 #include <stdarg.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winnt.h"
@@ -202,6 +201,20 @@ static PS_ATTRIBUTE_LIST *ps_attributes_32to64( PS_ATTRIBUTE_LIST **attr, const 
             ret->Attributes[i].Size     = sizeof(TEB *);
             ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
             break;
+        case PS_ATTRIBUTE_GROUP_AFFINITY:
+            {
+                GROUP_AFFINITY32 *aff32 = ret->Attributes[i].ValuePtr;
+                GROUP_AFFINITY *aff64;
+                ret->Attributes[i].Size     = sizeof(GROUP_AFFINITY);
+                ret->Attributes[i].ValuePtr = Wow64AllocateTemp( ret->Attributes[i].Size );
+                aff64 = ret->Attributes[i].ValuePtr;
+                aff64->Mask = aff32->Mask;
+                aff64->Group = aff32->Group;
+                aff64->Reserved[0] = aff32->Reserved[0];
+                aff64->Reserved[1] = aff32->Reserved[1];
+                aff64->Reserved[2] = aff32->Reserved[2];
+            }
+            break;
         }
     }
     *attr = ret;
@@ -266,6 +279,26 @@ void put_vm_counters( VM_COUNTERS_EX32 *info32, const VM_COUNTERS_EX *info, ULON
     info32->PagefileUsage              = info->PagefileUsage;
     info32->PeakPagefileUsage          = info->PeakPagefileUsage;
     if (size == sizeof(VM_COUNTERS_EX32)) info32->PrivateUsage = info->PrivateUsage;
+}
+
+
+/**********************************************************************
+ *           wow64_NtAlertMultipleThreadByThreadId
+ */
+NTSTATUS WINAPI wow64_NtAlertMultipleThreadByThreadId( UINT *args )
+{
+    LONG *handles_ptr = get_ptr( &args );
+    ULONG count = get_ulong( &args );
+    void *unk1 = get_ptr( &args );
+    void *unk2 = get_ptr( &args );
+    HANDLE handles_buf[256], *handles;
+    unsigned int i;
+
+    if (count <= ARRAY_SIZE(handles_buf)) handles = handles_buf;
+    else                                  handles = Wow64AllocateTemp( count * sizeof(*handles) );
+    for (i = 0; i < count; ++i) handles[i] = (HANDLE)(ULONG_PTR)handles_ptr[i];
+
+    return NtAlertMultipleThreadByThreadId( handles, count, unk1, unk2 );
 }
 
 
@@ -908,12 +941,17 @@ NTSTATUS WINAPI wow64_NtSetInformationProcess( UINT *args )
     case ProcessPriorityClass:   /* PROCESS_PRIORITY_CLASS */
     case ProcessBasePriority:   /* ULONG */
     case ProcessPriorityBoost:  /* ULONG */
-    case ProcessExecuteFlags:   /* ULONG */
     case ProcessPagePriority:   /* MEMORY_PRIORITY_INFORMATION */
     case ProcessPowerThrottlingState:   /* PROCESS_POWER_THROTTLING_STATE */
     case ProcessLeapSecondInformation:   /* PROCESS_LEAP_SECOND_INFO */
     case ProcessWineGrantAdminToken:   /* NULL */
         return NtSetInformationProcess( handle, class, ptr, len );
+
+    case ProcessExecuteFlags:   /* ULONG */
+        status = NtSetInformationProcess( handle, class, ptr, len );
+        if (!status && pBTCpuNotifyProcessExecuteFlagsChange)
+            pBTCpuNotifyProcessExecuteFlagsChange(*(ULONG *)ptr);
+        return status;
 
     case ProcessAccessToken: /* PROCESS_ACCESS_TOKEN */
         if (len == sizeof(PROCESS_ACCESS_TOKEN32))
@@ -1128,6 +1166,17 @@ NTSTATUS WINAPI wow64_NtTerminateThread( UINT *args )
     if (pBTCpuThreadTerm) pBTCpuThreadTerm( handle, exit_code );
 
     return NtTerminateThread( handle, exit_code );
+}
+
+
+/**********************************************************************
+ *           wow64_NtWorkerFactoryWorkerReady
+ */
+NTSTATUS WINAPI wow64_NtWorkerFactoryWorkerReady( UINT *args )
+{
+    HANDLE handle = get_handle( &args );
+
+    return NtWorkerFactoryWorkerReady( handle );
 }
 
 

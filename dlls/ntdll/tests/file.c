@@ -26,6 +26,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
 
 #include "ntstatus.h"
 /* Define WIN32_NO_STATUS so MSVC does not give us duplicate macro
@@ -67,13 +68,10 @@ static NTSTATUS (WINAPI *pNtWriteFile)(HANDLE hFile, HANDLE hEvent,
                                        PIO_STATUS_BLOCK io_status,
                                        const void* buffer, ULONG length,
                                        PLARGE_INTEGER offset, PULONG key);
-static NTSTATUS (WINAPI *pNtCancelIoFile)(HANDLE hFile, PIO_STATUS_BLOCK io_status);
-static NTSTATUS (WINAPI *pNtCancelIoFileEx)(HANDLE hFile, PIO_STATUS_BLOCK iosb, PIO_STATUS_BLOCK io_status);
 static NTSTATUS (WINAPI *pNtClose)( PHANDLE );
 static NTSTATUS (WINAPI *pNtFsControlFile) (HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc_context, PIO_STATUS_BLOCK io, ULONG code, PVOID in_buffer, ULONG in_size, PVOID out_buffer, ULONG out_size);
 
 static NTSTATUS (WINAPI *pNtCreateIoCompletion)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG);
-static NTSTATUS (WINAPI *pNtOpenIoCompletion)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES);
 static NTSTATUS (WINAPI *pNtQueryIoCompletion)(HANDLE, IO_COMPLETION_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 static NTSTATUS (WINAPI *pNtRemoveIoCompletion)(HANDLE, PULONG_PTR, PULONG_PTR, PIO_STATUS_BLOCK, PLARGE_INTEGER);
 static NTSTATUS (WINAPI *pNtRemoveIoCompletionEx)(HANDLE,FILE_IO_COMPLETION_INFORMATION*,ULONG,ULONG*,LARGE_INTEGER*,BOOLEAN);
@@ -146,6 +144,7 @@ static void create_file_test(void)
     static const WCHAR pathInvalidNtW[] = {'\\','\\','?','\\',0};
     static const WCHAR pathInvalidNt2W[] = {'\\','?','?','\\',0};
     static const WCHAR pathInvalidDosW[] = {'\\','D','o','s','D','e','v','i','c','e','s','\\',0};
+    static const WCHAR nodirW[] = {'n','o','s','u','c','h','d','i','r','\\','f','i','l','e',0};
     static const char testdata[] = "Hello World";
     FILE_NETWORK_OPEN_INFORMATION info;
     NTSTATUS status;
@@ -253,9 +252,70 @@ static void create_file_test(void)
     dir = NULL;
     status = pNtCreateFile( &dir, FILE_APPEND_DATA, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
                             FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
-    todo_wine
     ok( status == STATUS_INVALID_PARAMETER,
         "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+
+    /* FILE_SYNCHRONOUS_IO_* requires SYNCHRONIZE in the access mask. Windows
+     * checks for the literal bit, before expanding generic rights and before
+     * resolving the name. */
+    GetTempPathW( MAX_PATH, path );
+    lstrcatW( path, nodirW );
+    pRtlDosPathNameToNtPathName_U( path, &nameW, NULL, NULL );
+    InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
+
+    dir = NULL;
+    status = pNtCreateFile( &dir, FILE_READ_DATA, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                            FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
+    ok( status == STATUS_INVALID_PARAMETER,
+        "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+    if (!status) CloseHandle( dir );
+
+    dir = NULL;
+    status = pNtCreateFile( &dir, SYNCHRONIZE, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                            FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
+    ok( status == STATUS_OBJECT_PATH_NOT_FOUND,
+        "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+    if (!status) CloseHandle( dir );
+
+    pRtlFreeUnicodeString( &nameW );
+
+    GetTempPathW( MAX_PATH, path );
+    lstrcatW( path, fooW );
+    file = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, 0 );
+    ok( file != INVALID_HANDLE_VALUE, "CreateFile error %ld\n", GetLastError() );
+    CloseHandle( file );
+    pRtlDosPathNameToNtPathName_U( path, &nameW, NULL, NULL );
+    InitializeObjectAttributes( &attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL );
+
+    dir = NULL;
+    status = pNtCreateFile( &dir, GENERIC_READ, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                            FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
+    ok( status == STATUS_INVALID_PARAMETER,
+        "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+    if (!status) CloseHandle( dir );
+
+    dir = NULL;
+    status = pNtCreateFile( &dir, FILE_GENERIC_READ, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                            FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
+    ok( !status, "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+    if (!status) CloseHandle( dir );
+
+    dir = NULL;
+    status = pNtCreateFile( &dir, GENERIC_READ, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                            FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_ALERT, NULL, 0 );
+    ok( status == STATUS_INVALID_PARAMETER,
+        "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+    if (!status) CloseHandle( dir );
+
+    dir = NULL;
+    status = pNtCreateFile( &dir, MAXIMUM_ALLOWED, &attr, &io, NULL, FILE_ATTRIBUTE_NORMAL, 0,
+                            FILE_OPEN_IF, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
+    ok( status == STATUS_INVALID_PARAMETER,
+        "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
+    if (!status) CloseHandle( dir );
+
+    pRtlFreeUnicodeString( &nameW );
+    DeleteFileW( path );
 
     /* Invalid chars in file/dirnames */
     pRtlDosPathNameToNtPathName_U(questionmarkInvalidNameW, &nameW, NULL, NULL);
@@ -296,7 +356,7 @@ static void create_file_test(void)
         "open %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
 
     status = pNtQueryFullAttributesFile( &attr, &info );
-    todo_wine ok( status == STATUS_OBJECT_NAME_INVALID,
+    ok( status == STATUS_OBJECT_NAME_INVALID,
                   "query %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status );
 
     pRtlInitUnicodeString( &nameW, pathInvalidNt2W );
@@ -1425,14 +1485,17 @@ static void test_file_full_size_information(void)
         "[ffsie] TotalAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
         wine_dbgstr_longlong(ffsi.TotalAllocationUnits.QuadPart),
         wine_dbgstr_longlong(ffsie.ActualTotalAllocationUnits));
-    ok(ffsie.CallerAvailableAllocationUnits == ffsi.CallerAvailableAllocationUnits.QuadPart,
-        "[ffsie] CallerAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
-        wine_dbgstr_longlong(ffsi.CallerAvailableAllocationUnits.QuadPart),
-        wine_dbgstr_longlong(ffsie.CallerAvailableAllocationUnits));
-    ok(ffsie.ActualAvailableAllocationUnits == ffsi.ActualAvailableAllocationUnits.QuadPart,
-        "[ffsie] ActualAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
-        wine_dbgstr_longlong(ffsi.ActualAvailableAllocationUnits.QuadPart),
-        wine_dbgstr_longlong(ffsie.ActualAvailableAllocationUnits));
+    flaky  /* available disk space can change outside of our control */
+    {
+        ok(ffsie.CallerAvailableAllocationUnits == ffsi.CallerAvailableAllocationUnits.QuadPart,
+           "[ffsie] CallerAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
+           wine_dbgstr_longlong(ffsi.CallerAvailableAllocationUnits.QuadPart),
+           wine_dbgstr_longlong(ffsie.CallerAvailableAllocationUnits));
+        ok(ffsie.ActualAvailableAllocationUnits == ffsi.ActualAvailableAllocationUnits.QuadPart,
+           "[ffsie] ActualAvailableAllocationUnits error ffsi:0x%s, ffsie:0x%s\n",
+           wine_dbgstr_longlong(ffsi.ActualAvailableAllocationUnits.QuadPart),
+           wine_dbgstr_longlong(ffsie.ActualAvailableAllocationUnits));
+    }
 
     /* Assume file system is NTFS */
     ok(ffsie.BytesPerSector == 512, "[ffsie] BytesPerSector expected 512, got %ld\n",ffsie.BytesPerSector);
@@ -1626,12 +1689,26 @@ static void delete_object( WCHAR *path )
     }
 }
 
+static NTSTATUS set_rename_information( HANDLE file, FILE_INFORMATION_CLASS class,
+                                        ULONG flags, HANDLE root, const WCHAR *name )
+{
+    char buffer[1024];
+    FILE_RENAME_INFORMATION *info = (FILE_RENAME_INFORMATION *)buffer;
+    IO_STATUS_BLOCK io;
+
+    info->Flags = flags;
+    info->RootDirectory = root;
+    info->FileNameLength = wcslen( name ) * sizeof(WCHAR);
+    memcpy( info->FileName, name, info->FileNameLength );
+    return NtSetInformationFile( file, &io, info, sizeof(*info) + info->FileNameLength, class );
+}
+
 static void test_file_rename_information(FILE_INFORMATION_CLASS class)
 {
     static const WCHAR foo_txtW[] = {'\\','f','o','o','.','t','x','t',0};
     static const WCHAR fooW[] = {'f','o','o',0};
     WCHAR tmp_path[MAX_PATH], oldpath[MAX_PATH + 16], newpath[MAX_PATH + 16], *filename, *p;
-    FILE_RENAME_INFORMATION *fri;
+    FILE_RENAME_INFORMATION fri = {0};
     FILE_NAME_INFORMATION *fni;
     BOOL success, fileDeleted;
     UNICODE_STRING name_str;
@@ -1653,26 +1730,17 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
     DeleteFileW( newpath );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
 
     if (class == FileRenameInformationEx && (res == STATUS_NOT_IMPLEMENTED || res == STATUS_INVALID_INFO_CLASS))
     {
         win_skip( "FileRenameInformationEx not supported\n" );
         CloseHandle( handle );
-        HeapFree( GetProcessHeap(), 0, fri );
         delete_object( oldpath );
         return;
     }
 
-    ok( io.Status == STATUS_SUCCESS, "io.Status expected STATUS_SUCCESS, got %lx\n", io.Status );
     ok( res == STATUS_SUCCESS, "res expected STATUS_SUCCESS, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( fileDeleted, "file should not exist\n" );
@@ -1692,9 +1760,20 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
         wine_dbgstr_w(newpath + 2), wine_dbgstr_w(fni->FileName) );
     HeapFree( GetProcessHeap(), 0, fni );
 
+    fri.FileNameLength = 1;
+    fri.FileName[0] = '\\';
+    res = pNtSetInformationFile( handle, &io, &fri, sizeof(FILE_RENAME_INFORMATION) - 1, class );
+    todo_wine ok( res == STATUS_INFO_LENGTH_MISMATCH, "got %#lx\n", res );
+    res = pNtSetInformationFile( handle, &io, &fri, sizeof(FILE_RENAME_INFORMATION), class );
+    todo_wine ok( res == STATUS_INVALID_PARAMETER, "got %#lx\n", res );
+    fri.FileNameLength = 0;
+    res = pNtSetInformationFile( handle, &io, &fri, sizeof(FILE_RENAME_INFORMATION) - 1, class );
+    todo_wine ok( res == STATUS_INFO_LENGTH_MISMATCH, "got %#lx\n", res );
+    res = pNtSetInformationFile( handle, &io, &fri, sizeof(FILE_RENAME_INFORMATION), class );
+    todo_wine ok( res == STATUS_INVALID_PARAMETER, "got %#lx\n", res );
+
     CloseHandle( handle2 );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1707,24 +1786,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     res = GetTempFileNameW( tmp_path, fooW, 0, newpath );
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    todo_wine ok( io.Status == 0xdeadbeef, "io.Status expected 0xdeadbeef, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_OBJECT_NAME_COLLISION, "res expected STATUS_OBJECT_NAME_COLLISION, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1737,24 +1807,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     res = GetTempFileNameW( tmp_path, fooW, 0, newpath );
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == STATUS_SUCCESS, "io.Status expected STATUS_SUCCESS, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_SUCCESS, "res expected STATUS_SUCCESS, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( fileDeleted, "file should not exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1770,25 +1831,16 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( handle2 != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    todo_wine ok( io.Status == 0xdeadbeef, "io.Status expected 0xdeadbeef, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_OBJECT_NAME_COLLISION, "res expected STATUS_OBJECT_NAME_COLLISION, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1804,25 +1856,16 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( handle2 != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    todo_wine ok( io.Status == 0xdeadbeef, "io.Status expected 0xdeadbeef, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_ACCESS_DENIED, "res expected STATUS_ACCESS_DENIED, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1839,16 +1882,7 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
     DeleteFileW( newpath );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == STATUS_SUCCESS, "io.Status expected STATUS_SUCCESS, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_SUCCESS, "res expected STATUS_SUCCESS, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( fileDeleted, "file should not exist\n" );
@@ -1863,8 +1897,8 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
         wine_dbgstr_w(newpath + 2), wine_dbgstr_w(fni->FileName) );
     HeapFree( GetProcessHeap(), 0, fni );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1886,25 +1920,16 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
     DeleteFileW( newpath );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    todo_wine ok( io.Status == 0xdeadbeef || io.Status == STATUS_ACCESS_DENIED, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     todo_wine ok( res == STATUS_ACCESS_DENIED, "res expected STATUS_ACCESS_DENIED, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     todo_wine ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     todo_wine ok( fileDeleted, "file should not exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     if (res == STATUS_SUCCESS) /* remove when Wine is fixed */
     {
@@ -1926,24 +1951,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     res = GetTempFileNameW( tmp_path, fooW, 0, newpath );
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == 0xdeadbeef || io.Status == STATUS_OBJECT_NAME_COLLISION, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_OBJECT_NAME_COLLISION, "res expected STATUS_OBJECT_NAME_COLLISION, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1962,25 +1978,16 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( handle2 != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == 0xdeadbeef || io.Status == STATUS_OBJECT_NAME_COLLISION, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_OBJECT_NAME_COLLISION, "res expected STATUS_OBJECT_NAME_COLLISION, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -1996,24 +2003,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     res = GetTempFileNameW( tmp_path, fooW, 0, newpath );
     ok( res != 0, "failed to create temp file\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == STATUS_SUCCESS, "io.Status expected STATUS_SUCCESS, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_SUCCESS, "res expected STATUS_SUCCESS, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( fileDeleted, "file should not exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2032,25 +2030,16 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( handle2 != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == 0xdeadbeef || io.Status == STATUS_ACCESS_DENIED, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_ACCESS_DENIED, "res expected STATUS_ACCESS_DENIED, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2069,24 +2058,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     success = CreateDirectoryW( newpath, NULL );
     ok( success != 0, "failed to create temp directory\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == 0xdeadbeef || io.Status == STATUS_OBJECT_NAME_COLLISION, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_OBJECT_NAME_COLLISION, "res expected STATUS_OBJECT_NAME_COLLISION, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2105,24 +2085,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     success = CreateDirectoryW( newpath, NULL );
     ok( success != 0, "failed to create temp directory\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == 0xdeadbeef || io.Status == STATUS_ACCESS_DENIED, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_ACCESS_DENIED, "res expected STATUS_ACCESS_DENIED, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2144,25 +2115,16 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( handle2 != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == 0xdeadbeef || io.Status == STATUS_ACCESS_DENIED, "io.Status got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_ACCESS_DENIED, "res expected STATUS_ACCESS_DENIED, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2178,24 +2140,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     success = CreateDirectoryW( newpath, NULL );
     ok( success != 0, "failed to create temp directory\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    todo_wine ok( io.Status == 0xdeadbeef, "io.Status expected 0xdeadbeef, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_OBJECT_NAME_COLLISION, "res expected STATUS_OBJECT_NAME_COLLISION, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2211,24 +2164,15 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     success = CreateDirectoryW( newpath, NULL );
     ok( success != 0, "failed to create temp directory\n" );
     pRtlDosPathNameToNtPathName_U( newpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = FILE_RENAME_REPLACE_IF_EXISTS;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    todo_wine ok( io.Status == 0xdeadbeef, "io.Status expected 0xdeadbeef, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, FILE_RENAME_REPLACE_IF_EXISTS, NULL, name_str.Buffer );
     ok( res == STATUS_ACCESS_DENIED, "res expected STATUS_ACCESS_DENIED, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
     fileDeleted = GetFileAttributesW( newpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( !fileDeleted, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2246,15 +2190,7 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     handle2 = CreateFileW( tmp_path, 0, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0 );
     ok( handle2 != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + lstrlenW(filename) * sizeof(WCHAR) );
-    fri->Flags = 0;
-    fri->RootDirectory = handle2;
-    fri->FileNameLength = lstrlenW(filename) * sizeof(WCHAR);
-    memcpy( fri->FileName, filename, fri->FileNameLength );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == STATUS_SUCCESS, "io.Status expected STATUS_SUCCESS, got %lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, handle2, filename );
     ok( res == STATUS_SUCCESS, "res expected STATUS_SUCCESS, got %lx\n", res );
     fileDeleted = GetFileAttributesW( oldpath ) == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND;
     ok( fileDeleted, "file should not exist\n" );
@@ -2271,7 +2207,6 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
 
     CloseHandle( handle );
     CloseHandle( handle2 );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
     delete_object( newpath );
 
@@ -2282,21 +2217,36 @@ static void test_file_rename_information(FILE_INFORMATION_CLASS class)
     ok( handle != INVALID_HANDLE_VALUE, "CreateFileW failed\n" );
 
     pRtlDosPathNameToNtPathName_U( oldpath, &name_str, NULL, NULL );
-    fri = HeapAlloc( GetProcessHeap(), 0, sizeof(FILE_RENAME_INFORMATION) + name_str.Length );
-    fri->Flags = 0;
-    fri->RootDirectory = NULL;
-    fri->FileNameLength = name_str.Length;
-    memcpy( fri->FileName, name_str.Buffer, name_str.Length );
-    pRtlFreeUnicodeString( &name_str );
-
-    io.Status = 0xdeadbeef;
-    res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, class );
-    ok( io.Status == STATUS_SUCCESS, "got io status %#lx\n", io.Status );
+    res = set_rename_information( handle, class, 0, NULL, name_str.Buffer );
     ok( res == STATUS_SUCCESS, "got status %lx\n", res );
     ok( GetFileAttributesW( oldpath ) != INVALID_FILE_ATTRIBUTES, "file should exist\n" );
 
+    pRtlFreeUnicodeString( &name_str );
+
+    /* test some invalid NT names */
+
+    res = set_rename_information( handle, class, 0, NULL, L"\\??\\C:" );
+    todo_wine ok( res == STATUS_INVALID_PARAMETER, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\\\a" );
+    todo_wine ok( res == STATUS_OBJECT_NAME_INVALID, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\Device" );
+    todo_wine ok( res == STATUS_OBJECT_TYPE_MISMATCH, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\ObjectTypes\\Process" );
+    todo_wine ok( res == STATUS_OBJECT_TYPE_MISMATCH, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\" );
+    todo_wine ok( res == STATUS_OBJECT_TYPE_MISMATCH, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\Device\\" );
+    todo_wine ok( res == STATUS_OBJECT_NAME_INVALID, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\Device\\NamedPipe" );
+    todo_wine ok( res == STATUS_NOT_SAME_DEVICE, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\Device\\NamedPipe\\" );
+    todo_wine ok( res == STATUS_NOT_SAME_DEVICE, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\bogus" );
+    todo_wine ok( res == STATUS_OBJECT_NAME_NOT_FOUND, "got status %#lx\n", res );
+    res = set_rename_information( handle, class, 0, NULL, L"\\bogus\\path" );
+    todo_wine ok( res == STATUS_OBJECT_PATH_NOT_FOUND, "got status %#lx\n", res );
+
     CloseHandle( handle );
-    HeapFree( GetProcessHeap(), 0, fri );
     delete_object( oldpath );
 }
 
@@ -3898,7 +3848,7 @@ static void test_file_disposition_information(void)
 
 static void test_file_name_information(void)
 {
-    WCHAR *file_name, *volume_prefix, *expected;
+    WCHAR *file_name, *volume_prefix, expected[MAX_PATH];
     FILE_NAME_INFORMATION *info;
     OBJECT_NAME_INFORMATION *nameinfo;
     OBJECT_ATTRIBUTES attr;
@@ -3920,7 +3870,6 @@ static void test_file_name_information(void)
     file_name_size = GetSystemDirectoryW( NULL, 0 );
     file_name = HeapAlloc( GetProcessHeap(), 0, file_name_size * sizeof(*file_name) );
     volume_prefix = HeapAlloc( GetProcessHeap(), 0, file_name_size * sizeof(*volume_prefix) );
-    expected = HeapAlloc( GetProcessHeap(), 0, file_name_size * sizeof(*volume_prefix) );
 
     len = GetSystemDirectoryW( file_name, file_name_size );
     ok(len == file_name_size - 1,
@@ -3977,12 +3926,23 @@ static void test_file_name_information(void)
 
     CloseHandle( h );
     HeapFree( GetProcessHeap(), 0, info );
-    HeapFree( GetProcessHeap(), 0, expected );
     HeapFree( GetProcessHeap(), 0, volume_prefix );
 
     info_size = sizeof(*nameinfo) + MAX_PATH * sizeof(WCHAR);
     nameinfo = malloc( info_size );
     InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
+
+    RtlInitUnicodeString( &nt_name, L"\\??\\C:" );
+    status = NtOpenSymbolicLinkObject( &h, GENERIC_READ, &attr );
+    ok( !status, "got %#lx\n", status );
+
+    nt_name.Buffer = expected;
+    nt_name.MaximumLength = sizeof(expected);
+    status = NtQuerySymbolicLinkObject( h, &nt_name, NULL );
+    ok( !status, "got %#lx\n", status );
+    wcscpy( &expected[nt_name.Length / sizeof(WCHAR)], L"\\windows" );
+
+    NtClose( h );
 
     RtlInitUnicodeString( &nt_name, L"\\??\\C:\\windows" );
     status = pNtOpenFile( &h, GENERIC_READ, &attr, &io, FILE_SHARE_READ|FILE_SHARE_WRITE,
@@ -3992,6 +3952,10 @@ static void test_file_name_information(void)
     ok( status == STATUS_SUCCESS, "NtQueryObject returned %#lx\n", status );
     ok( nameinfo->Name.Buffer[nameinfo->Name.Length / sizeof(WCHAR) - 1] != '\\',
         "name ends with backslash %s\n", debugstr_w(nameinfo->Name.Buffer) );
+    todo_wine ok( nameinfo->Name.Length == wcslen( expected ) * sizeof(WCHAR) &&
+        !wcsnicmp( nameinfo->Name.Buffer, expected, wcslen( expected )),
+        "expected %s, got %s\n", debugstr_w( expected ),
+        debugstr_wn( nameinfo->Name.Buffer, nameinfo->Name.Length / sizeof(WCHAR) ));
     CloseHandle( h );
 
     RtlInitUnicodeString( &nt_name, L"\\??\\C:\\windows\\" );
@@ -4042,7 +4006,6 @@ static void test_file_name_information(void)
 
     file_name = HeapAlloc( GetProcessHeap(), 0, file_name_size * sizeof(*file_name) );
     volume_prefix = HeapAlloc( GetProcessHeap(), 0, file_name_size * sizeof(*volume_prefix) );
-    expected = HeapAlloc( GetProcessHeap(), 0, file_name_size * sizeof(*expected) );
 
     len = pGetSystemWow64DirectoryW( file_name, file_name_size );
     ok(len == file_name_size - 1,
@@ -4068,7 +4031,6 @@ static void test_file_name_information(void)
 
     CloseHandle( h );
     HeapFree( GetProcessHeap(), 0, info );
-    HeapFree( GetProcessHeap(), 0, expected );
     HeapFree( GetProcessHeap(), 0, volume_prefix );
     HeapFree( GetProcessHeap(), 0, file_name );
 }
@@ -4798,11 +4760,15 @@ static void test_query_volume_information_file(void)
     NTSTATUS status;
     HANDLE dir;
     WCHAR path[MAX_PATH];
+    WCHAR drives[MAX_PATH];
+    WCHAR *drive;
+    WCHAR sysdrive[4];
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK io;
     UNICODE_STRING nameW;
     FILE_FS_VOLUME_INFORMATION *ffvi;
     BYTE buf[sizeof(FILE_FS_VOLUME_INFORMATION) + MAX_PATH * sizeof(WCHAR)];
+    DWORD count;
 
     GetWindowsDirectoryW( path, MAX_PATH );
     pRtlDosPathNameToNtPathName_U( path, &nameW, NULL, NULL );
@@ -4836,6 +4802,50 @@ static void test_query_volume_information_file(void)
     trace("VolumeSerialNumber: %lx VolumeLabelName: %s\n", ffvi->VolumeSerialNumber, wine_dbgstr_w(ffvi->VolumeLabel));
 
     CloseHandle( dir );
+
+    GetSystemDirectoryW( sysdrive, ARRAY_SIZE(sysdrive) );
+    count = GetLogicalDriveStringsW( ARRAY_SIZE(drives), drives );
+    ok( count && count < ARRAY_SIZE(drives), "GetLogicalDriveStringsW returned %lu\n", count );
+
+    for (drive = drives; *drive; drive += lstrlenW(drive) + 1)
+    {
+        UINT type = GetDriveTypeW( drive );
+        HANDLE root;
+
+        if ((drive[0] | 0x20) == (sysdrive[0] | 0x20)) continue;
+        if (type != DRIVE_FIXED && type != DRIVE_REMOTE && type != DRIVE_RAMDISK)
+            continue;
+
+        root = CreateFileW( drive, 0, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL,
+                            OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL );
+        if (root == INVALID_HANDLE_VALUE)
+        {
+            skip( "cannot open %s: %lu\n", wine_dbgstr_w(drive), GetLastError() );
+            continue;
+        }
+
+        ZeroMemory( buf, sizeof(buf) );
+        io.Status = 0xdadadada;
+        io.Information = 0xcacacaca;
+
+        status = pNtQueryVolumeInformationFile( root, &io, buf, sizeof(buf),
+                                                FileFsVolumeInformation );
+        ok( status == STATUS_SUCCESS,
+            "NtQueryVolumeInformationFile(FileFsVolumeInformation) on %s returned %lx\n",
+            wine_dbgstr_w(drive), status );
+        ok( io.Status == STATUS_SUCCESS,
+            "io.Status on %s is %lx\n", wine_dbgstr_w(drive), io.Status );
+        if (status == STATUS_SUCCESS)
+        {
+            ok( io.Information == (FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel)
+                                   + ffvi->VolumeLabelLength),
+                "expected %ld, got %Iu on %s\n",
+                (FIELD_OFFSET(FILE_FS_VOLUME_INFORMATION, VolumeLabel) + ffvi->VolumeLabelLength),
+                io.Information, wine_dbgstr_w(drive) );
+        }
+
+        CloseHandle( root );
+    }
 }
 
 static void test_query_attribute_information_file(void)
@@ -4870,6 +4880,8 @@ static void test_query_attribute_information_file(void)
     ok(ffai->FileSystemAttributes != 0, "Missing FileSystemAttributes\n");
     ok(ffai->MaximumComponentNameLength != 0, "Missing MaximumComponentNameLength\n");
     ok(ffai->FileSystemNameLength != 0, "Missing FileSystemNameLength\n");
+    ok(ffai->FileSystemAttributes & FILE_SUPPORTS_OPEN_BY_FILE_ID,
+            "expected FILE_SUPPORTS_OPEN_BY_FILE_ID to be set, got %#lx\n", ffai->FileSystemAttributes);
 
     trace("FileSystemAttributes: %lx MaximumComponentNameLength: %lx FileSystemName: %s\n",
           ffai->FileSystemAttributes, ffai->MaximumComponentNameLength,
@@ -4963,7 +4975,8 @@ static void test_NtCreateFile(void)
 
     status = pNtCreateFile( &handle, GENERIC_READ, &attr, &io, NULL,
                             0, FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_CREATE, 0, NULL, 0);
-    ok( status == STATUS_OBJECT_NAME_INVALID, "failed %s %lx\n", debugstr_w(nameW.Buffer), status );
+    ok( status == STATUS_OBJECT_NAME_INVALID || status == STATUS_NOT_A_DIRECTORY,
+        "failed %s %lx\n", debugstr_w(nameW.Buffer), status );
     status = pNtCreateFile( &handle, GENERIC_READ, &attr, &io, NULL,
                             0, FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_CREATE,
                             FILE_DIRECTORY_FILE, NULL, 0);
@@ -5024,17 +5037,17 @@ static void test_read_write(void)
     iob.Information = -1;
     status = pNtWriteFile(hfile, 0, NULL, NULL, &iob, NULL, sizeof(contents), NULL, NULL);
     ok(status == STATUS_INVALID_USER_BUFFER, "expected STATUS_INVALID_USER_BUFFER, got %#lx\n", status);
-    ok(iob.Status == -1, "expected -1, got %#lx\n", iob.Status);
-    ok(iob.Information == -1, "expected -1, got %Iu\n", iob.Information);
+    ok(iob.Status == -1 || iob.Status == STATUS_INVALID_USER_BUFFER, "got %#lx\n", iob.Status);
+    ok(iob.Information == (iob.Status == -1 ? -1 : 0), "got %Iu\n", iob.Information);
 
     iob.Status = -1;
     iob.Information = -1;
     SetEvent(event);
     status = pNtWriteFile(hfile, event, NULL, NULL, &iob, NULL, sizeof(contents), NULL, NULL);
     ok(status == STATUS_INVALID_USER_BUFFER, "expected STATUS_INVALID_USER_BUFFER, got %#lx\n", status);
-    ok(iob.Status == -1, "expected -1, got %#lx\n", iob.Status);
-    ok(iob.Information == -1, "expected -1, got %Iu\n", iob.Information);
-    ok(!is_signaled(event), "event is not signaled\n");
+    ok(iob.Status == -1 || iob.Status == STATUS_INVALID_USER_BUFFER, "got %#lx\n", iob.Status);
+    ok(iob.Information == (iob.Status == -1 ? -1 : 0), "got %Iu\n", iob.Information);
+    ok(!is_signaled(event) == !(iob.Status == STATUS_INVALID_USER_BUFFER), "event is not signaled\n");
 
     iob.Status = -1;
     iob.Information = -1;
@@ -5950,6 +5963,26 @@ static void test_file_readonly_access(void)
     status = pNtOpenFile(&handle, GENERIC_WRITE, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
     ok(status == STATUS_ACCESS_DENIED, "expected STATUS_ACCESS_DENIED, got %#lx.\n", status);
 
+    /* NtOpenFile FILE_READ_ATTRIBUTES with FILE_WRITE_DATA */
+    status = pNtOpenFile(&handle, FILE_READ_ATTRIBUTES | FILE_WRITE_DATA, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_ACCESS_DENIED, "expected STATUS_ACCESS_DENIED, got %#lx.\n", status);
+    CloseHandle(handle);
+
+    /* NtOpenFile FILE_READ_ATTRIBUTES with FILE_APPEND_DATA */
+    status = pNtOpenFile(&handle, FILE_READ_ATTRIBUTES | FILE_APPEND_DATA, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_ACCESS_DENIED, "expected STATUS_ACCESS_DENIED, got %#lx.\n", status);
+    CloseHandle(handle);
+
+    /* NtOpenFile FILE_{READ,WRITE}_ATTRIBUTES */
+    status = pNtOpenFile(&handle, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx.\n", status);
+    CloseHandle(handle);
+
+    /* NtOpenFile FILE_{READ,WRITE}_EA */
+    status = pNtOpenFile(&handle, FILE_READ_EA | FILE_WRITE_EA, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
+    ok(status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx.\n", status);
+    CloseHandle(handle);
+
     /* NtOpenFile DELETE without FILE_DELETE_ON_CLOSE */
     status = pNtOpenFile(&handle, DELETE, &attr, &io, default_sharing, FILE_NON_DIRECTORY_FILE);
     ok(status == STATUS_SUCCESS, "expected STATUS_SUCCESS, got %#lx.\n", status);
@@ -6103,9 +6136,11 @@ static void test_reparse_points(void)
     WCHAR temp_path[MAX_PATH], path[MAX_PATH], path2[MAX_PATH], ret_path[MAX_PATH];
     HANDLE temp_dir, handle, handle2, subdir, token, find_handle;
     FILE_DISPOSITION_INFORMATION fdi = {.DoDeleteFile = TRUE};
+    FILE_INTERNAL_INFORMATION internal_info, internal_info2;
     REPARSE_GUID_DATA_BUFFER *guid_data, *guid_data2;
-    FILE_STAT_INFORMATION stat_info, stat_info2;
+    FILE_ATTRIBUTE_TAG_INFORMATION tag_info;
     FILE_DIRECTORY_INFORMATION *dir_info;
+    FILE_STANDARD_INFORMATION std_info;
     FILE_BASIC_INFORMATION basic_info;
     REPARSE_DATA_BUFFER *data, *data2;
     char dir_buffer[1024], buffer[9];
@@ -6149,7 +6184,7 @@ static void test_reparse_points(void)
 
     status = GetVolumeInformationW( L"C:\\", NULL, 0, NULL, NULL, &flags, NULL, 0 );
     ok( status == TRUE, "got error %lu\n", GetLastError() );
-    todo_wine ok( flags & FILE_SUPPORTS_REPARSE_POINTS, "C: drive does not support reparse points\n" );
+    ok( flags & FILE_SUPPORTS_REPARSE_POINTS, "C: drive does not support reparse points\n" );
 
     swprintf( path, ARRAY_SIZE(path), L"\\??\\%s", temp_path );
     RtlInitUnicodeString( &nameW, path );
@@ -6203,7 +6238,7 @@ static void test_reparse_points(void)
     CloseHandle( handle2 );
 
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
-    todo_wine ok( status == STATUS_DIRECTORY_NOT_EMPTY, "got %#lx\n", status );
+    ok( status == STATUS_DIRECTORY_NOT_EMPTY, "got %#lx\n", status );
 
     ret = DeleteFileW( path );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
@@ -6212,14 +6247,7 @@ static void test_reparse_points(void)
     ok( !status, "got %#lx\n", status );
 
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
-    todo_wine ok( !status, "got %#lx\n", status );
-    if (status)
-    {
-        status = NtSetInformationFile( handle, &io, &fdi, sizeof(fdi), FileDispositionInformation );
-        ok( !status, "got %#lx\n", status );
-        NtClose( handle );
-        goto out;
-    }
+    ok( !status, "got %#lx\n", status );
 
     data2 = malloc( data_size + 1 );
     memset( data2, 0xcc, data_size + 1 );
@@ -6242,27 +6270,36 @@ static void test_reparse_points(void)
     ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
     ok( !memcmp( data, data2, data_size ), "buffers didn't match\n" );
 
-    status = NtQueryInformationFile( handle, &io, &stat_info, sizeof(stat_info), FileStatInformation );
+    status = NtQueryInformationFile( handle, &io, &tag_info, sizeof(tag_info), FileAttributeTagInformation );
     ok( !status, "got %#lx\n", status );
-    ok( stat_info.FileAttributes == (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT),
-        "got attributes %#lx\n", stat_info.FileAttributes );
-    ok( stat_info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", stat_info.ReparseTag );
-    ok( !stat_info.AllocationSize.QuadPart, "got size %#I64x\n", stat_info.AllocationSize.QuadPart );
-    ok( !stat_info.EndOfFile.QuadPart, "got eof %#I64x\n", stat_info.EndOfFile.QuadPart );
+    ok( tag_info.FileAttributes == (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT),
+        "got attributes %#lx\n", tag_info.FileAttributes );
+    ok( tag_info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", tag_info.ReparseTag );
+    status = NtQueryInformationFile( handle, &io, &std_info, sizeof(std_info), FileStandardInformation );
+    ok( !status, "got %#lx\n", status );
+    ok( !std_info.AllocationSize.QuadPart, "got size %#I64x\n", std_info.AllocationSize.QuadPart );
+    ok( !std_info.EndOfFile.QuadPart, "got eof %#I64x\n", std_info.EndOfFile.QuadPart );
+    ok( std_info.NumberOfLinks == 1, "got %lu links\n", std_info.NumberOfLinks );
+    ok( std_info.Directory == TRUE, "got directory %u\n", std_info.Directory );
 
-    status = NtQueryInformationFile( handle2, &io, &stat_info, sizeof(stat_info), FileStatInformation );
+    status = NtQueryInformationFile( handle2, &io, &tag_info, sizeof(tag_info), FileAttributeTagInformation );
     ok( !status, "got %#lx\n", status );
-    ok( stat_info.FileAttributes == (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT),
-        "got attributes %#lx\n", stat_info.FileAttributes );
-    ok( stat_info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", stat_info.ReparseTag );
-    ok( !stat_info.AllocationSize.QuadPart, "got size %#I64x\n", stat_info.AllocationSize.QuadPart );
-    ok( !stat_info.EndOfFile.QuadPart, "got eof %#I64x\n", stat_info.EndOfFile.QuadPart );
+    ok( tag_info.FileAttributes == (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT),
+        "got attributes %#lx\n", tag_info.FileAttributes );
+    ok( tag_info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", tag_info.ReparseTag );
+    status = NtQueryInformationFile( handle2, &io, &std_info, sizeof(std_info), FileStandardInformation );
+    ok( !status, "got %#lx\n", status );
+    ok( !std_info.AllocationSize.QuadPart, "got size %#I64x\n", std_info.AllocationSize.QuadPart );
+    ok( !std_info.EndOfFile.QuadPart, "got eof %#I64x\n", std_info.EndOfFile.QuadPart );
+    ok( std_info.NumberOfLinks == 1, "got %lu links\n", std_info.NumberOfLinks );
+    ok( std_info.Directory == TRUE, "got directory %u\n", std_info.Directory );
 
     NtClose( handle2 );
 
     status = NtCreateFile( &handle2, GENERIC_ALL, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN_IF, FILE_DIRECTORY_FILE, NULL, 0 );
-    ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
+    if (!status) NtClose( handle2 );
 
     status = NtCreateFile( &handle2, GENERIC_ALL, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT, NULL, 0 );
@@ -6270,13 +6307,17 @@ static void test_reparse_points(void)
     status = NtCreateFile( &handle2, GENERIC_ALL, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN_IF, FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT, NULL, 0 );
     ok( !status, "got %#lx\n", status );
-    status = NtQueryInformationFile( handle2, &io, &stat_info, sizeof(stat_info), FileStatInformation );
+    status = NtQueryInformationFile( handle2, &io, &tag_info, sizeof(tag_info), FileAttributeTagInformation );
     ok( !status, "got %#lx\n", status );
-    ok( stat_info.FileAttributes == (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT),
-        "got attributes %#lx\n", stat_info.FileAttributes );
-    ok( stat_info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", stat_info.ReparseTag );
-    ok( !stat_info.AllocationSize.QuadPart, "got size %#I64x\n", stat_info.AllocationSize.QuadPart );
-    ok( !stat_info.EndOfFile.QuadPart, "got eof %#I64x\n", stat_info.EndOfFile.QuadPart );
+    ok( tag_info.FileAttributes == (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT),
+        "got attributes %#lx\n", tag_info.FileAttributes );
+    ok( tag_info.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", tag_info.ReparseTag );
+    status = NtQueryInformationFile( handle2, &io, &std_info, sizeof(std_info), FileStandardInformation );
+    ok( !status, "got %#lx\n", status );
+    ok( !std_info.AllocationSize.QuadPart, "got size %#I64x\n", std_info.AllocationSize.QuadPart );
+    ok( !std_info.EndOfFile.QuadPart, "got eof %#I64x\n", std_info.EndOfFile.QuadPart );
+    ok( std_info.NumberOfLinks == 1, "got %lu links\n", std_info.NumberOfLinks );
+    ok( std_info.Directory == TRUE, "got directory %u\n", std_info.Directory );
     NtClose( handle2 );
 
     /* alter the target in-place */
@@ -6287,6 +6328,7 @@ static void test_reparse_points(void)
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, FILE_DIRECTORY_FILE, NULL, 0 );
     ok( status == STATUS_OBJECT_NAME_NOT_FOUND, "got %#lx\n", status );
+    NtClose( handle2 );
 
     swprintf( path, ARRAY_SIZE(path), L"\\??\\%stestreparse_dir\\", temp_path );
     data_size = init_reparse_mount_point( &data, path );
@@ -6307,8 +6349,8 @@ static void test_reparse_points(void)
 
     status = NtQueryDirectoryFile( handle, NULL, NULL, NULL, &io, dir_buffer, sizeof(dir_buffer),
                                    FileDirectoryInformation, FALSE, NULL, TRUE );
-    ok( status == STATUS_PENDING, "got %#lx\n", status );
-    ret = WaitForSingleObject( handle, 0 );
+    ok( status == STATUS_PENDING || !status, "got %#lx\n", status );
+    ret = WaitForSingleObject( handle, 1000 );
     ok( !ret, "got %#x\n", ret );
     dir_info = (FILE_DIRECTORY_INFORMATION *)dir_buffer;
     ok( dir_info->FileNameLength == sizeof(WCHAR) && !memcmp( dir_info->FileName, L".", dir_info->FileNameLength ),
@@ -6372,11 +6414,22 @@ static void test_reparse_points(void)
     ok( find_data.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT, "got tag %#lx\n", find_data.dwReserved0 );
     FindClose( find_handle );
 
-    /* Attempting to use the reparse point itself as a parent results in the
-     * somewhat cryptic STATUS_REPARSE_POINT_NOT_RESOLVED.
+    /* Test using the reparse point as a parent.
+     * On some machines this returns STATUS_REPARSE_POINT_NOT_RESOLVED (which
+     * is cryptic but at least makes a bit of sense).
+     * For some unfathomable reason, though, on all of the testbot machines,
+     * it instead returns either STATUS_OBJECT_NAME_INVALID or, rarely and
+     * apparently randomly, STATUS_OBJECT_NAME_NOT_FOUND. In the last case,
+     * if FILE_OPENIF is used, the open actually succeeds, but then somehow the
+     * file is kept open and can't properly be deleted later.
+     * It's not clear what accounts for the difference in behaviour, since both
+     * patterns are observed on the same OS version.
+     * Before Windows 10 v1607 only STATUS_DIRECTORY_IS_A_REPARSE_POINT has
+     * been observed.
      *
      * Attempting to open the same file, using an empty name, results in the
-     * even more cryptic STATUS_IO_REPARSE_DATA_INVALID.
+     * even more cryptic STATUS_IO_REPARSE_DATA_INVALID, and this is at least
+     * consistent across machines.
      * It works with FILE_OPEN_REPARSE_POINT, though. */
 
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -6385,15 +6438,27 @@ static void test_reparse_points(void)
     InitializeObjectAttributes( &attr2, &nameW, 0, handle2, NULL );
     RtlInitUnicodeString( &nameW, L"subdir" );
     status = NtCreateFile( &subdir, GENERIC_ALL, &attr2, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           FILE_OPEN_IF, 0, NULL, 0 );
-    ok( status == STATUS_REPARSE_POINT_NOT_RESOLVED, "got %#lx\n", status );
+                           FILE_OPEN, 0, NULL, 0 );
+    ok( status == STATUS_REPARSE_POINT_NOT_RESOLVED
+        || status == STATUS_OBJECT_NAME_INVALID
+        || status == STATUS_OBJECT_NAME_NOT_FOUND
+        || status == STATUS_DIRECTORY_IS_A_REPARSE_POINT, "got %#lx\n", status );
     status = NtCreateFile( &subdir, GENERIC_ALL, &attr2, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, NULL, 0 );
-    ok( status == STATUS_REPARSE_POINT_NOT_RESOLVED, "got %#lx\n", status );
+                           FILE_OPEN, FILE_OPEN_REPARSE_POINT, NULL, 0 );
+    ok( status == STATUS_REPARSE_POINT_NOT_RESOLVED
+        || status == STATUS_OBJECT_NAME_INVALID
+        || status == STATUS_OBJECT_NAME_NOT_FOUND
+        || status == STATUS_DIRECTORY_IS_A_REPARSE_POINT, "got %#lx\n", status );
     RtlInitUnicodeString( &nameW, L"" );
     status = NtCreateFile( &subdir, GENERIC_ALL, &attr2, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN_IF, 0, NULL, 0 );
-    ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
+    if (!status)
+    {
+        status = NtSetInformationFile( subdir, &io, &fdi, sizeof(fdi), FileDispositionInformation );
+        ok( !status, "got %#lx\n", status );
+        NtClose( subdir );
+    }
     status = NtCreateFile( &subdir, GENERIC_ALL, &attr2, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, FILE_OPEN_REPARSE_POINT, NULL, 0 );
     ok( !status, "got %#lx\n", status );
@@ -6408,7 +6473,8 @@ static void test_reparse_points(void)
     RtlInitUnicodeString( &nameW, L"testreparse_dirlink" );
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, 0, NULL, 0 );
-    ok( status == STATUS_NOT_A_DIRECTORY, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_NOT_A_DIRECTORY || broken(!status) /* < Win10 1709 */, "got %#lx\n", status );
+    if (!status) NtClose( handle2 );
 
     swprintf( path, ARRAY_SIZE(path), L"\\??\\%stestreparse_dirlink", temp_path );
     data_size = init_reparse_mount_point( &data, path );
@@ -6418,6 +6484,7 @@ static void test_reparse_points(void)
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, FILE_DIRECTORY_FILE, NULL, 0 );
     ok( status == STATUS_REPARSE_POINT_NOT_RESOLVED, "got %#lx\n", status );
+    NtClose( handle2 );
 
     swprintf( path, ARRAY_SIZE(path), L"\\??\\%s", temp_path );
     data_size = init_reparse_mount_point( &data, path );
@@ -6459,11 +6526,11 @@ static void test_reparse_points(void)
 
     data->ReparseTag = 3;
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_DELETE_REPARSE_POINT, data, sizeof(REPARSE_DATA_BUFFER), NULL, 0 );
-    ok( status == STATUS_IO_REPARSE_TAG_MISMATCH, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_IO_REPARSE_TAG_MISMATCH, "got %#lx\n", status );
 
     data->ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_DELETE_REPARSE_POINT, data, sizeof(REPARSE_DATA_BUFFER), NULL, 0 );
-    ok( !status, "got %#lx\n", status );
+    todo_wine ok( !status, "got %#lx\n", status );
 
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_DELETE_REPARSE_POINT, data, sizeof(REPARSE_DATA_BUFFER), NULL, 0 );
     ok( status == STATUS_NOT_A_REPARSE_POINT, "got %#lx\n", status );
@@ -6483,7 +6550,8 @@ static void test_reparse_points(void)
 
     RtlInitUnicodeString( &nameW, L"testreparse_dirlink" );
     status = NtCreateFile( &handle2, GENERIC_ALL, &attr, &io, NULL, 0, 0, FILE_OPEN, 0, NULL, 0 );
-    ok( status == STATUS_NOT_A_DIRECTORY, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_NOT_A_DIRECTORY || broken(!status) /* < Win10 1709 */, "got %#lx\n", status );
+    if (!status) NtClose( handle2 );
 
     swprintf( path, ARRAY_SIZE(path), L"%stestreparse_dir2", temp_path );
     ret = DeleteFileW( path );
@@ -6496,15 +6564,16 @@ static void test_reparse_points(void)
     ok( ret == FALSE, "got %d\n", ret );
     ok( GetLastError() == ERROR_ALREADY_EXISTS, "got error %lu\n", GetLastError() );
 
-    CloseHandle( handle );
-
     /* Test FindFirstFile(). */
 
     swprintf( path, ARRAY_SIZE(path), L"%s/testreparse_dirlink", temp_path );
-    handle = CreateFileW( path, DELETE, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, 0 );
-    ok( handle != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
-    status = NtSetInformationFile( handle, &io, &fdi, sizeof(fdi), FileDispositionInformation );
+    handle2 = CreateFileW( path, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, 0 );
+    ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
+    status = NtSetInformationFile( handle2, &io, &fdi, sizeof(fdi), FileDispositionInformation );
     ok( !status, "got %#lx\n", status );
+    CloseHandle( handle2 );
+
     CloseHandle( handle );
 
     handle = CreateFileW( path, DELETE, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, 0 );
@@ -6606,36 +6675,52 @@ static void test_reparse_points(void)
     ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
     CloseHandle( handle2 );
 
-    /* Set the "directory" bit on our custom tag. */
+    /* Set the "directory" bit on our custom tag.
+     * This is only supported since Windows 10 v1607. */
 
     data_size = init_reparse_custom( &guid_data, 0x1000beef );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, guid_data, data_size, NULL, 0 );
-    ok( !status, "got %#lx\n", status );
+    todo_wine_if( status == STATUS_DIRECTORY_NOT_EMPTY )
+    ok( !status || broken(status == STATUS_DIRECTORY_NOT_EMPTY), "got %#lx\n", status );
 
-    io.Information = 1;
-    status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_GET_REPARSE_POINT, NULL, 0, guid_data2, data_size + 1);
-    ok( !status, "got %#lx\n", status );
-    ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
-    ok( !memcmp( guid_data, guid_data2, data_size ), "buffers didn't match\n" );
+    if (!status)
+    {
+        io.Information = 1;
+        status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_GET_REPARSE_POINT, NULL, 0, guid_data2, data_size + 1);
+        ok( !status, "got %#lx\n", status );
+        ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
+        ok( !memcmp( guid_data, guid_data2, data_size ), "buffers didn't match\n" );
 
-    RtlInitUnicodeString( &nameW, L"testreparse_customdir" );
-    status = NtOpenFile( &handle2, GENERIC_READ, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0 );
-    ok( !status, "got %#lx\n", status );
+        RtlInitUnicodeString( &nameW, L"testreparse_customdir" );
+        status = NtOpenFile( &handle2, GENERIC_READ, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0 );
+        todo_wine ok( !status, "got %#lx\n", status );
 
-    io.Information = 1;
-    status = NtFsControlFile( handle2, NULL, NULL, NULL, &io, FSCTL_GET_REPARSE_POINT, NULL, 0, guid_data2, data_size + 1);
-    ok( !status, "got %#lx\n", status );
-    ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
-    ok( !memcmp( guid_data, guid_data2, data_size ), "buffers didn't match\n" );
-    NtClose( handle2 );
+        if (!status)
+        {
+            io.Information = 1;
+            status = NtFsControlFile( handle2, NULL, NULL, NULL, &io, FSCTL_GET_REPARSE_POINT, NULL, 0, guid_data2, data_size + 1);
+            ok( !status, "got %#lx\n", status );
+            ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
+            ok( !memcmp( guid_data, guid_data2, data_size ), "buffers didn't match\n" );
+            NtClose( handle2 );
+        }
 
-    RtlInitUnicodeString( &nameW, L"testreparse_customdir\\file" );
-    status = NtOpenFile( &handle2, GENERIC_READ, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0 );
-    ok( !status, "got %#lx\n", status );
-    NtClose( handle2 );
+        RtlInitUnicodeString( &nameW, L"testreparse_customdir\\file" );
+        status = NtOpenFile( &handle2, GENERIC_READ, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0 );
+        todo_wine ok( !status, "got %#lx\n", status );
+        if (!status) NtClose( handle2 );
+    }
 
     ret = DeleteFileW( path );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
+    if (!ret)
+    {
+        guid_data->ReparseDataLength = 0;
+        status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_DELETE_REPARSE_POINT, guid_data, sizeof(REPARSE_DATA_BUFFER), NULL, 0 );
+        ok( !status, "got %#lx\n", status );
+        ret = DeleteFileW( path );
+        ok( ret == TRUE, "got error %lu\n", GetLastError() );
+    }
 
     status = NtSetInformationFile( handle, &io, &fdi, sizeof(fdi), FileDispositionInformation );
     ok( !status, "got %#lx\n", status );
@@ -6650,18 +6735,22 @@ static void test_reparse_points(void)
     ret = LookupPrivilegeValueA( NULL, "SeCreateSymbolicLinkPrivilege", &luid );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
-    privs.PrivilegeCount = 1;
-    privs.Privileges[0].Luid = luid;
-    privs.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    ret = AdjustTokenPrivileges( token, FALSE, &privs, 0, NULL, NULL );
-    ok( ret == TRUE, "got error %lu\n", GetLastError() );
-    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+    if (ret)
     {
-        win_skip("Insufficient permissions to perform symlink tests.\n");
+        privs.PrivilegeCount = 1;
+        privs.Privileges[0].Luid = luid;
+        privs.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        ret = AdjustTokenPrivileges( token, FALSE, &privs, 0, NULL, NULL );
+        ok( ret == TRUE, "got error %lu\n", GetLastError() );
+        if (GetLastError() == ERROR_NOT_ALL_ASSIGNED)
+        {
+            todo_wine
+            win_skip("Insufficient permissions to perform symlink tests.\n");
+            CloseHandle( token );
+            goto out;
+        }
         CloseHandle( token );
-        goto out;
     }
-    CloseHandle( token );
 
     RtlInitUnicodeString( &nameW, L"testreparse_filelink" );
     status = NtCreateFile( &handle, GENERIC_ALL, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -6674,7 +6763,7 @@ static void test_reparse_points(void)
 
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, 0, NULL, 0 );
-    ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
 
     data_size = init_reparse_symlink( &data, L"testreparse_dir", SYMLINK_FLAG_RELATIVE );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
@@ -6682,7 +6771,8 @@ static void test_reparse_points(void)
 
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, 0, NULL, 0 );
-    ok( status == STATUS_FILE_IS_A_DIRECTORY, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_FILE_IS_A_DIRECTORY || broken(!status) /* < Win10 1709 */, "got %#lx\n", status );
+    if (!status) NtClose( handle2 );
 
     data_size = init_reparse_symlink( &data, L"testreparse_file\\", SYMLINK_FLAG_RELATIVE );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
@@ -6698,8 +6788,8 @@ static void test_reparse_points(void)
 
     status = NtCreateFile( &handle2, GENERIC_READ, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            FILE_OPEN, 0, NULL, 0 );
-    ok( !status, "got %#lx\n", status );
-    NtClose( handle2 );
+    ok( !status || broken(status == STATUS_IO_REPARSE_DATA_INVALID) /* win10 1607 only */, "got %#lx\n", status );
+    if (!status) NtClose( handle2 );
 
     data_size = init_reparse_symlink( &data, L"testreparse_file", SYMLINK_FLAG_RELATIVE );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
@@ -6744,7 +6834,7 @@ static void test_reparse_points(void)
      * in the file. The status here is rather misleading, of course. */
     data->ReparseDataLength = data_size - offsetof( REPARSE_DATA_BUFFER, SymbolicLinkReparseBuffer );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
-    ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
 
     SetFilePointer( handle, 0, 0, FILE_BEGIN );
     ret = SetEndOfFile( handle );
@@ -6757,8 +6847,7 @@ static void test_reparse_points(void)
     swprintf( path2, ARRAY_SIZE(path2), L"%s/testreparse_file2", temp_path );
 
     ret = CopyFileW( path, path2, FALSE );
-    ok( ret == TRUE, "got %d\n", ret );
-    ok( !GetLastError(), "got error %lu\n", GetLastError() );
+    ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     handle2 = CreateFileW( path2, GENERIC_ALL, 0, NULL, OPEN_EXISTING, FILE_OPEN_REPARSE_POINT, 0 );
     ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
@@ -6776,8 +6865,7 @@ static void test_reparse_points(void)
 
     /* Copying *to* the symlink replaces the target contents, not the symlink. */
     ret = CopyFileW( path2, path, FALSE );
-    ok( ret == TRUE, "got %d\n", ret );
-    ok( !GetLastError(), "got error %lu\n", GetLastError() );
+    ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     swprintf( path, ARRAY_SIZE(path), L"%s/testreparse_file", temp_path );
     handle2 = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -6794,8 +6882,7 @@ static void test_reparse_points(void)
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     ret = CopyFileW( path2, path, TRUE );
-    ok( ret == TRUE, "got %d\n", ret );
-    ok( !GetLastError(), "got error %lu\n", GetLastError() );
+    ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     handle2 = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, 0, 0 );
@@ -6819,38 +6906,44 @@ static void test_reparse_points(void)
     handle2 = CreateFileW( path2, GENERIC_ALL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0 );
     ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
-    status = NtQueryInformationFile( handle, &io, &stat_info, sizeof(stat_info), FileStatInformation );
+    status = NtQueryInformationFile( handle2, &io, &tag_info, sizeof(tag_info), FileAttributeTagInformation );
     ok( !status, "got %#lx\n", status );
-    status = NtQueryInformationFile( handle2, &io, &stat_info2, sizeof(stat_info2), FileStatInformation );
+    ok( tag_info.FileAttributes == (FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT),
+        "got attributes %#lx\n", tag_info.FileAttributes );
+    ok( tag_info.ReparseTag == IO_REPARSE_TAG_SYMLINK, "got tag %#lx\n", tag_info.ReparseTag );
+    status = NtQueryInformationFile( handle2, &io, &std_info, sizeof(std_info), FileStandardInformation );
     ok( !status, "got %#lx\n", status );
-    ok( stat_info2.FileAttributes == (FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_REPARSE_POINT),
-        "got attributes %#lx\n", stat_info2.FileAttributes );
-    ok( stat_info2.ReparseTag == IO_REPARSE_TAG_SYMLINK, "got tag %#lx\n", stat_info2.ReparseTag );
-    ok( !stat_info2.AllocationSize.QuadPart, "got size %#I64x\n", stat_info2.AllocationSize.QuadPart );
-    ok( !stat_info2.EndOfFile.QuadPart, "got eof %#I64x\n", stat_info2.EndOfFile.QuadPart );
-    ok( stat_info2.FileId.QuadPart == stat_info.FileId.QuadPart, "got ids %#I64x vs %#I64x\n",
-        stat_info.FileId.QuadPart, stat_info2.FileId.QuadPart );
+    todo_wine ok( !std_info.AllocationSize.QuadPart, "got size %#I64x\n", std_info.AllocationSize.QuadPart );
+    ok( !std_info.EndOfFile.QuadPart, "got eof %#I64x\n", std_info.EndOfFile.QuadPart );
+    ok( std_info.NumberOfLinks == 2, "got %lu links\n", std_info.NumberOfLinks );
+    ok( !std_info.Directory, "got directory %u\n", std_info.Directory );
+    status = NtQueryInformationFile( handle, &io, &internal_info, sizeof(internal_info), FileInternalInformation );
+    ok( !status, "got %#lx\n", status );
+    status = NtQueryInformationFile( handle2, &io, &internal_info2, sizeof(internal_info2), FileInternalInformation );
+    ok( !status, "got %#lx\n", status );
+    ok( internal_info.IndexNumber.QuadPart == internal_info2.IndexNumber.QuadPart, "got ids %#I64x vs %#I64x\n",
+        internal_info.IndexNumber.QuadPart, internal_info2.IndexNumber.QuadPart );
     CloseHandle( handle2 );
 
     handle2 = CreateFileW( path2, GENERIC_ALL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, 0, 0 );
     ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
-    status = NtQueryInformationFile( handle2, &io, &stat_info2, sizeof(stat_info2), FileStatInformation );
+    status = NtQueryInformationFile( handle2, &io, &internal_info2, sizeof(internal_info2), FileInternalInformation );
     ok( !status, "got %#lx\n", status );
-    ok( stat_info2.FileId.QuadPart != stat_info.FileId.QuadPart, "got ids %#I64x vs %#I64x\n",
-        stat_info.FileId.QuadPart, stat_info2.FileId.QuadPart );
+    ok( internal_info.IndexNumber.QuadPart != internal_info2.IndexNumber.QuadPart, "got ids %#I64x vs %#I64x\n",
+        internal_info.IndexNumber.QuadPart, internal_info2.IndexNumber.QuadPart );
     CloseHandle( handle2 );
 
     /* Clean up the hard link, and show in the process that DeleteFile()
      * deletes the symlink, not the target. */
-
     ret = DeleteFileW( path2 );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     handle2 = CreateFileW( path2, GENERIC_ALL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0 );
-    ok( handle2 == INVALID_HANDLE_VALUE, "expected failure\n" );
-    ok( GetLastError() == ERROR_FILE_NOT_FOUND, "got error %lu\n", GetLastError() );
+    todo_wine ok( handle2 == INVALID_HANDLE_VALUE, "expected failure\n" );
+    todo_wine ok( GetLastError() == ERROR_FILE_NOT_FOUND, "got error %lu\n", GetLastError() );
+    if (handle2 != INVALID_HANDLE_VALUE) CloseHandle( handle2 );
 
     handle2 = CreateFileW( path2, GENERIC_ALL, 0, NULL, CREATE_ALWAYS, 0, 0 );
     ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
@@ -6864,6 +6957,10 @@ static void test_reparse_points(void)
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     /* MoveFile(). */
+
+    /* FIXME: our deletion logic is broken where hardlinks are concerned;
+     * use a new path to work around that */
+    swprintf( path2, ARRAY_SIZE(path2), L"%stestreparse_filelink3", temp_path );
 
     ret = MoveFileW( path, path2 );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
@@ -6895,15 +6992,15 @@ static void test_reparse_points(void)
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
     ret = GetFileAttributesW( path );
-    ok( ret == (FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_REPARSE_POINT),
+    todo_wine ok( ret == (FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_REPARSE_POINT),
         "got attributes %#x\n", ret );
 
     ret = GetFileAttributesW( path2 );
     ok( ret == FILE_ATTRIBUTE_ARCHIVE, "got attributes %#x\n", ret );
 
     status = NtQueryAttributesFile( &attr, &basic_info );
-    ok( !status, "got %#lx\n", status );
-    ok( basic_info.FileAttributes == (FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_REPARSE_POINT),
+    todo_wine ok( !status, "got %#lx\n", status );
+    todo_wine ok( basic_info.FileAttributes == (FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_REPARSE_POINT),
         "got attributes %#lx\n", basic_info.FileAttributes );
 
     /* Path names. */
@@ -6917,8 +7014,9 @@ static void test_reparse_points(void)
     /* ReOpenFile(). */
 
     handle2 = ReOpenFile( handle, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0 );
-    ok( handle2 == INVALID_HANDLE_VALUE, "expected failure\n" );
-    ok( GetLastError() == ERROR_INVALID_REPARSE_DATA, "got error %lu\n", GetLastError() );
+    todo_wine ok( handle2 == INVALID_HANDLE_VALUE, "expected failure\n" );
+    todo_wine ok( GetLastError() == ERROR_INVALID_REPARSE_DATA, "got error %lu\n", GetLastError() );
+    if (handle2 != INVALID_HANDLE_VALUE) CloseHandle( handle2 );
     handle2 = ReOpenFile( handle, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_FLAG_OPEN_REPARSE_POINT );
     ok( handle2 != INVALID_HANDLE_VALUE, "got error %lu\n", GetLastError() );
     CloseHandle( handle2 );
@@ -6979,6 +7077,7 @@ static void test_reparse_points(void)
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
     ok( !status, "got %#lx\n", status );
 
+    data2 = malloc( data_size + 1 );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_GET_REPARSE_POINT, NULL, 0, data2, data_size + 1);
     ok( !status, "got %#lx\n", status );
     ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
@@ -7028,7 +7127,7 @@ static void test_reparse_points(void)
 
     data_size = init_reparse_symlink( &data, L"", SYMLINK_FLAG_RELATIVE );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
-    ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
 
     data_size = init_reparse_symlink( &data, L"..", SYMLINK_FLAG_RELATIVE );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
@@ -7036,7 +7135,7 @@ static void test_reparse_points(void)
 
     RtlInitUnicodeString( &nameW, L"testreparse_dirlink\\" );
     status = NtOpenFile( &handle2, READ_CONTROL, &attr, &io, 0, 0 );
-    ok( !status, "got %#lx\n", status );
+    todo_wine ok( !status, "got %#lx\n", status );
     NtClose( handle2 );
 
     /* Try to unwind past the drive root. */
@@ -7047,6 +7146,31 @@ static void test_reparse_points(void)
     RtlInitUnicodeString( &nameW, L"testreparse_dirlink\\" );
     status = NtOpenFile( &handle2, READ_CONTROL, &attr, &io, 0, 0 );
     ok( status == STATUS_IO_REPARSE_DATA_INVALID, "got %#lx\n", status );
+
+    NtClose( handle );
+
+    /* Test a link that unwinds past the directory the link is in. */
+
+    RtlInitUnicodeString( &nameW, L"testreparse_dir\\file" );
+    status = NtCreateFile( &handle, GENERIC_ALL, &attr, &io, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT, NULL, 0 );
+    ok( !status, "got %#lx\n", status );
+
+    swprintf( path, ARRAY_SIZE(path), L"..\\testreparse_file", temp_path );
+    data_size = init_reparse_symlink( &data, path, SYMLINK_FLAG_RELATIVE );
+    status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_SET_REPARSE_POINT, data, data_size, NULL, 0 );
+    ok( !status, "got %#lx\n", status );
+
+    status = NtOpenFile( &handle2, GENERIC_READ | SYNCHRONIZE, &attr, &io, 0, FILE_SYNCHRONOUS_IO_NONALERT );
+    ok( !status, "got %#lx\n", status );
+
+    ret = ReadFile( handle2, buffer, sizeof(buffer), &size, NULL );
+    ok( ret == TRUE, "got error %lu\n", GetLastError() );
+    todo_wine ok( size == 5, "got size %lu\n", size );
+    ok( !memcmp( buffer, "file2", size ), "got data %s\n", debugstr_an( buffer, size ));
+
+    NtClose( handle2 );
+    NtClose( handle );
 
     /* Create an absolute symlink. */
 
@@ -7071,6 +7195,7 @@ static void test_reparse_points(void)
     ret = CreateDirectoryW( path, NULL );
     ok( ret == TRUE, "got error %lu\n", GetLastError() );
 
+    data2 = malloc( data_size + 1 );
     status = NtFsControlFile( handle, NULL, NULL, NULL, &io, FSCTL_GET_REPARSE_POINT, NULL, 0, data2, data_size + 1);
     ok( !status, "got %#lx\n", status );
     ok( io.Information == data_size, "expected size %#Ix, got %#Ix\n", data_size, io.Information );
@@ -7096,7 +7221,7 @@ static void test_reparse_points(void)
     ok( !status, "got %#lx\n", status );
 
     status = NtOpenFile( &handle2, READ_CONTROL, &attr, &io, 0, 0 );
-    ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
 
     swprintf( path, ARRAY_SIZE(path), L".\\testreparse_dir2", temp_path );
     data_size = init_reparse_symlink( &data, path, 0 );
@@ -7104,7 +7229,7 @@ static void test_reparse_points(void)
     ok( !status, "got %#lx\n", status );
 
     status = NtOpenFile( &handle2, READ_CONTROL, &attr, &io, 0, 0 );
-    ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_OBJECT_NAME_INVALID, "got %#lx\n", status );
 
     swprintf( path, ARRAY_SIZE(path), L"\\??\\%s.\\testreparse_dir2", temp_path );
     data_size = init_reparse_symlink( &data, path, 0 );
@@ -7112,7 +7237,7 @@ static void test_reparse_points(void)
     ok( !status, "got %#lx\n", status );
 
     status = NtOpenFile( &handle2, READ_CONTROL, &attr, &io, 0, 0 );
-    ok( status == STATUS_OBJECT_PATH_NOT_FOUND, "got %#lx\n", status );
+    todo_wine ok( status == STATUS_OBJECT_PATH_NOT_FOUND, "got %#lx\n", status );
 
     swprintf( path, ARRAY_SIZE(path), L"\\??\\%stestreparse_dir2\\..\\testreparse_dir2", temp_path );
     data_size = init_reparse_symlink( &data, path, 0 );
@@ -7272,6 +7397,219 @@ static void test_file_map_large_size(void)
     DeleteFileA(source);
 }
 
+static void test_find_file(void)
+{
+    IO_STATUS_BLOCK io;
+    UNICODE_STRING nameW;
+    OBJECT_ATTRIBUTES attr;
+    WIN32_FIND_DATAW find_data;
+    WCHAR filter[MAX_PATH];
+    WCHAR path[MAX_PATH];
+    WCHAR file1[MAX_PATH];
+    WCHAR file2[MAX_PATH];
+    NTSTATUS status;
+    HANDLE handle;
+    BOOL deleted;
+    UINT ret;
+
+    GetTempPathW(MAX_PATH, path);
+    lstrcatW(path, L"findfiletest");
+    CreateDirectoryW(path, NULL);
+
+    ret = GetTempFileNameW(path, L"pfx", 0, file1);
+    ok(!!ret, "GetTempFileName() error %lu\n", GetLastError());
+
+    ret = GetTempFileNameW(path, L"pfx", 0, file2);
+    ok(!!ret, "GetTempFileName() error %lu\n", GetLastError());
+
+    swprintf(filter, ARRAY_SIZE(filter), L"%s\\*.*", path);
+    handle = FindFirstFileW(filter, &find_data);
+    ok(handle != INVALID_HANDLE_VALUE, "FindFirstFileW error %lu\n", GetLastError());
+
+    do
+    {
+        if (find_data.cFileName[0] == '.')
+            continue;
+        /* break while FindFirstFileW holding open handle */
+        break;
+    }
+    while (FindNextFileW(handle, &find_data));
+
+    /* simulate SHFileOperationW(FO_MOVE) on directory being searched */
+    DeleteFileW(file2);
+    DeleteFileW(file1);
+
+    deleted = RemoveDirectoryW(path);
+    ok(deleted, "RemoveDirectoryW failed with error %lu\n", GetLastError());
+
+    FindClose(handle);
+
+    deleted = GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES;
+    ok(deleted, "Should not exist %ls\n", path);
+
+    /* simulate with Nt calls */
+    CreateDirectoryW(path, NULL);
+
+    pRtlDosPathNameToNtPathName_U(path, &nameW, NULL, NULL );
+    InitializeObjectAttributes(&attr, &nameW, OBJ_CASE_INSENSITIVE, 0, NULL);
+
+    handle = NULL;
+    status = pNtOpenFile(&handle, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &io,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT);
+    ok(!status, "NtOpenFile %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status);
+
+    SetLastError(0xdeadbeef);
+    deleted = RemoveDirectoryW(path);
+    ok(!deleted, "RemoveDirectoryW should have failed\n");
+    ok(GetLastError() == ERROR_SHARING_VIOLATION, "got %lu\n", GetLastError());
+
+    pNtClose(handle);
+
+    /* recreate with FILE_SHARE_DELETE */
+    handle = NULL;
+    status = pNtOpenFile(&handle, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &io,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT);
+    ok(!status, "NtOpenFile %s failed %lx\n", wine_dbgstr_w(nameW.Buffer), status);
+
+    SetLastError(0xdeadbeef);
+    deleted = RemoveDirectoryW(path);
+    ok(deleted, "RemoveDirectoryW failed with error %lu\n", GetLastError());
+
+    pRtlFreeUnicodeString( &nameW );
+    pNtClose(handle);
+}
+
+static void test_root_directory(void)
+{
+    WCHAR buffer[512];
+    FILE_RENAME_INFORMATION *rename_info = (void *)buffer;
+    WCHAR link_name[40], temp_path[MAX_PATH];
+    HANDLE file, symlink, temp_src;
+    UNICODE_STRING string, target;
+    OBJECT_ATTRIBUTES attr;
+    IO_STATUS_BLOCK io;
+    NTSTATUS ret;
+
+    static const struct
+    {
+        const WCHAR *root, *name;
+        NTSTATUS status, rename_status;
+        bool dir_obj;
+    }
+    tests[] =
+    {
+        {L"\\??\\C:\\windows\\", L"\\system32", STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:\\windows\\", L"system32",   STATUS_SUCCESS,           STATUS_OBJECT_NAME_COLLISION},
+        {L"\\??\\C:\\windows\\", L"",           STATUS_SUCCESS,           STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:\\windows", L"\\system32",   STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:\\windows", L"system32",     STATUS_SUCCESS,           STATUS_OBJECT_NAME_COLLISION},
+        {L"\\??\\C:\\", L"\\windows",           STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:\\", L"windows",             STATUS_SUCCESS,           STATUS_OBJECT_NAME_COLLISION},
+        {L"\\??\\C:", L"\\windows",             STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:", L"windows",               STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:", L"\\",                    STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??\\C:", L"",                      STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\??", L"C:",                        STATUS_SUCCESS,           STATUS_OBJECT_TYPE_MISMATCH, true},
+        {L"\\??", L"C:\\",                      STATUS_SUCCESS,           STATUS_OBJECT_TYPE_MISMATCH, true},
+        {L"\\??", L"C:\\windows",               STATUS_SUCCESS,           STATUS_OBJECT_TYPE_MISMATCH, true},
+        /* ?? is apparently special and can't be used here, but GLOBAL?? is equivalent */
+        {L"\\", L"GLOBAL??\\C:\\windows",       STATUS_SUCCESS,           STATUS_OBJECT_TYPE_MISMATCH, true},
+        {L"\\SystemRoot", L"\\system32",        STATUS_INVALID_PARAMETER, STATUS_INVALID_PARAMETER},
+        {L"\\SystemRoot", L"system32",          STATUS_SUCCESS,           STATUS_OBJECT_NAME_COLLISION},
+    };
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(tests); ++i)
+    {
+        winetest_push_context( "root %s, name %s", debugstr_w(tests[i].root), debugstr_w(tests[i].name) );
+
+        InitializeObjectAttributes( &attr, &string, 0, 0, NULL );
+        RtlInitUnicodeString( &string, tests[i].root );
+        if (tests[i].dir_obj)
+        {
+            ret = NtOpenFile( &file, FILE_READ_ATTRIBUTES, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE, 0 );
+            ok( ret == STATUS_OBJECT_TYPE_MISMATCH, "got %#lx\n", ret );
+            ret = NtOpenDirectoryObject( &file, DIRECTORY_TRAVERSE, &attr );
+            ok( !ret, "got %#lx\n", ret );
+        }
+        else
+        {
+            ret = NtOpenDirectoryObject( &file, DIRECTORY_TRAVERSE, &attr );
+            todo_wine_if (i < 5 || i > 14) ok( ret == STATUS_OBJECT_TYPE_MISMATCH, "got %#lx\n", ret );
+            ret = NtOpenFile( &file, FILE_READ_ATTRIBUTES, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE, 0 );
+            todo_wine_if (i > 14) ok( !ret, "got %#lx\n", ret );
+        }
+
+        if (ret)
+        {
+            winetest_pop_context();
+            return;
+        }
+
+        attr.RootDirectory = file;
+        RtlInitUnicodeString( &string, tests[i].name );
+        ret = NtOpenFile( &file, FILE_READ_ATTRIBUTES, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE, 0 );
+        todo_wine_if (i == 8 || i == 10 || i == 13 || i == 14)
+            ok( ret == tests[i].status, "got %#lx\n", ret );
+        if (!ret) NtClose( file );
+
+        /* test FileRenameInformation */
+
+        GetTempPathW( MAX_PATH, temp_path );
+        wcscat( temp_path, L"winetest_rename_src" );
+        temp_src = CreateFileW( temp_path, GENERIC_ALL, 0, NULL, CREATE_ALWAYS, 0, 0 );
+        ok( temp_src != INVALID_HANDLE_VALUE, "failed to create %s, error %lu\n",
+            debugstr_w( temp_path ), GetLastError() );
+
+        rename_info->ReplaceIfExists = 0;
+        rename_info->RootDirectory = attr.RootDirectory;
+        rename_info->FileNameLength = string.Length;
+        memcpy( rename_info->FileName, string.Buffer, string.Length );
+        ret = NtSetInformationFile( temp_src, &io, rename_info,
+                                    sizeof(FILE_RENAME_INFORMATION) + string.Length, FileRenameInformation );
+        todo_wine_if (i == 2 || i == 8 || i >= 10)
+            ok( ret == tests[i].rename_status, "got %#lx\n", ret );
+
+        CloseHandle( temp_src );
+        ret = DeleteFileW( temp_path );
+        ok( ret == TRUE, "got error %lu\n", GetLastError() );
+
+        NtClose( attr.RootDirectory );
+        winetest_pop_context();
+    }
+
+    InitializeObjectAttributes( &attr, &string, 0, 0, NULL );
+
+    swprintf( link_name, ARRAY_SIZE(link_name),
+              L"\\BaseNamedObjects\\Session\\%u\\testsymlink", NtCurrentTeb()->Peb->SessionId );
+    RtlInitUnicodeString( &string, link_name );
+    RtlInitUnicodeString( &target, L"\\??\\C:\\" );
+    ret = NtCreateSymbolicLinkObject( &symlink, 0, &attr, &target );
+    ok( !ret, "got %#lx\n", ret );
+
+    attr.RootDirectory = symlink;
+    RtlInitUnicodeString( &string, L"windows" );
+    ret = NtOpenFile( &file, FILE_READ_ATTRIBUTES, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE, 0 );
+    todo_wine ok( ret == STATUS_OBJECT_TYPE_MISMATCH, "got %#lx\n", ret );
+
+    attr.RootDirectory = NULL;
+    RtlInitUnicodeString( &string, link_name );
+    ret = NtOpenDirectoryObject( &file, DIRECTORY_TRAVERSE, &attr );
+    ok( ret == STATUS_OBJECT_TYPE_MISMATCH, "got %#lx\n", ret );
+    ret = NtOpenFile( &file, FILE_READ_ATTRIBUTES, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE, 0 );
+    ok( !ret, "got %#lx\n", ret );
+
+    attr.RootDirectory = file;
+    RtlInitUnicodeString( &string, L"windows" );
+    ret = NtOpenFile( &file, FILE_READ_ATTRIBUTES, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE, 0 );
+    todo_wine ok( !ret, "got %#lx\n", ret );
+    if (!ret) NtClose( file );
+
+    NtClose( attr.RootDirectory );
+    NtClose( symlink );
+}
+
 START_TEST(file)
 {
     HMODULE hkernel32 = GetModuleHandleA("kernel32.dll");
@@ -7296,12 +7634,9 @@ START_TEST(file)
     pNtDeleteFile           = (void *)GetProcAddress(hntdll, "NtDeleteFile");
     pNtReadFile             = (void *)GetProcAddress(hntdll, "NtReadFile");
     pNtWriteFile            = (void *)GetProcAddress(hntdll, "NtWriteFile");
-    pNtCancelIoFile         = (void *)GetProcAddress(hntdll, "NtCancelIoFile");
-    pNtCancelIoFileEx       = (void *)GetProcAddress(hntdll, "NtCancelIoFileEx");
     pNtClose                = (void *)GetProcAddress(hntdll, "NtClose");
     pNtFsControlFile        = (void *)GetProcAddress(hntdll, "NtFsControlFile");
     pNtCreateIoCompletion   = (void *)GetProcAddress(hntdll, "NtCreateIoCompletion");
-    pNtOpenIoCompletion     = (void *)GetProcAddress(hntdll, "NtOpenIoCompletion");
     pNtQueryIoCompletion    = (void *)GetProcAddress(hntdll, "NtQueryIoCompletion");
     pNtRemoveIoCompletion   = (void *)GetProcAddress(hntdll, "NtRemoveIoCompletion");
     pNtRemoveIoCompletionEx = (void *)GetProcAddress(hntdll, "NtRemoveIoCompletionEx");
@@ -7356,4 +7691,6 @@ START_TEST(file)
     test_mailslot_name();
     test_reparse_points();
     test_file_map_large_size();
+    test_find_file();
+    test_root_directory();
 }

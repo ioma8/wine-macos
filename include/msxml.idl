@@ -164,7 +164,7 @@ interface IXMLDocument : IDispatch
     HRESULT doctype( [retval, out] BSTR *p );
 
     [propget, id(DISPID_XMLDOCUMENT_DTDURL)]
-    HRESULT dtdURl( [retval, out] BSTR *p );
+    HRESULT dtdURL( [retval, out] BSTR *p );
 
     [id(DISPID_XMLDOCUMENT_CREATEELEMENT)]
     HRESULT createElement(
@@ -299,7 +299,7 @@ typedef enum tagXMLEMEM_TYPE {
 typedef struct _xml_error {
 	UINT _nLine;
 	BSTR _pchBuf;
-	BSTR _cchBuf;
+	UINT _cchBuf;
 	UINT _ich;
 	BSTR _pszFound;
 	BSTR _pszExpected;

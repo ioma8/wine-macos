@@ -2289,6 +2289,15 @@ static void test_video_window_position(IVideoWindow *window, HWND hwnd, HWND our
     ok(top == 200, "Got top %ld.\n", top);
     ok(width == 300, "Got width %ld.\n", width);
     ok(height == 400, "Got height %ld.\n", height);
+
+    left = top = width = height = 0xdeadbeef;
+    hr = IVideoWindow_GetRestorePosition(window, &left, &top, &width, &height);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(left == 100, "Got left %ld.\n", left);
+    ok(top == 200, "Got top %ld.\n", top);
+    ok(width == 300, "Got width %ld.\n", width);
+    ok(height == 400, "Got height %ld.\n", height);
+
     GetWindowRect(hwnd, &rect);
     ok(rect.left == 100, "Got window left %ld.\n", rect.left);
     ok(rect.top == 200, "Got window top %ld.\n", rect.top);
@@ -2514,13 +2523,10 @@ static void test_video_window_messages(IVideoWindow *window, HWND hwnd, HWND our
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 }
 
-static void test_video_window_autoshow(IVideoWindow *window, IFilterGraph2 *graph, HWND hwnd)
+static void test_video_window_autoshow(IVideoWindow *window, IBaseFilter *filter, HWND hwnd)
 {
-    IMediaControl *control;
     HRESULT hr;
     LONG l;
-
-    IFilterGraph2_QueryInterface(graph, &IID_IMediaControl, (void **)&control);
 
     hr = IVideoWindow_get_AutoShow(window, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
@@ -2529,14 +2535,31 @@ static void test_video_window_autoshow(IVideoWindow *window, IFilterGraph2 *grap
     hr = IVideoWindow_put_Visible(window, OAFALSE);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-    hr = IMediaControl_Pause(control);
+    hr = IBaseFilter_Pause(filter);
     ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 
     hr = IVideoWindow_get_Visible(window, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(l == OATRUE, "Got %ld.\n", l);
 
-    hr = IMediaControl_Stop(control);
+    hr = IVideoWindow_put_Visible(window, OAFALSE);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IBaseFilter_Run(filter, 0);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IVideoWindow_get_Visible(window, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == OATRUE, "Got %ld.\n", l);
+
+    hr = IBaseFilter_Pause(filter);
+    todo_wine ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
+
+    hr = IVideoWindow_get_Visible(window, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == OATRUE, "Got %ld.\n", l);
+
+    hr = IBaseFilter_Stop(filter);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
     hr = IVideoWindow_get_Visible(window, &l);
@@ -2549,17 +2572,22 @@ static void test_video_window_autoshow(IVideoWindow *window, IFilterGraph2 *grap
     hr = IVideoWindow_put_Visible(window, OAFALSE);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-    hr = IMediaControl_Pause(control);
+    hr = IBaseFilter_Pause(filter);
     ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 
     hr = IVideoWindow_get_Visible(window, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(l == OAFALSE, "Got %ld.\n", l);
 
-    hr = IMediaControl_Stop(control);
-    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IBaseFilter_Pause(filter);
+    todo_wine ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 
-    IMediaControl_Release(control);
+    hr = IVideoWindow_get_Visible(window, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == OAFALSE, "Got %ld.\n", l);
+
+    hr = IBaseFilter_Stop(filter);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
 }
 
 static void test_video_window(void)
@@ -2694,7 +2722,7 @@ static void test_video_window(void)
     test_video_window_style(window, hwnd, our_hwnd);
     test_video_window_state(window, hwnd, our_hwnd);
     test_video_window_position(window, hwnd, our_hwnd);
-    test_video_window_autoshow(window, graph, hwnd);
+    test_video_window_autoshow(window, filter, hwnd);
     test_video_window_owner(window, hwnd, our_hwnd);
     test_video_window_messages(window, hwnd, our_hwnd);
 
@@ -3019,8 +3047,8 @@ static HRESULT WINAPI presenter_PresentImage(IVMRImagePresenter9 *iface, DWORD_P
     IDirect3DDevice9_Release(device);
     ok(cookie == 0xabacab, "Got cookie %#Ix.\n", cookie);
     todo_wine ok(info->dwFlags == VMR9Sample_TimeValid, "Got flags %#lx.\n", info->dwFlags);
-    ok(!info->rtStart, "Got start time %s.\n", wine_dbgstr_longlong(info->rtStart));
-    ok(info->rtEnd == 10000000, "Got end time %s.\n", wine_dbgstr_longlong(info->rtEnd));
+    ok(!info->rtStart, "Got start time %I64d.\n", info->rtStart);
+    ok(info->rtEnd == 10000000, "Got end time %I64d.\n", info->rtEnd);
     todo_wine ok(info->szAspectRatio.cx == 120, "Got aspect ratio width %ld.\n", info->szAspectRatio.cx);
     todo_wine ok(info->szAspectRatio.cy == 60, "Got aspect ratio height %ld.\n", info->szAspectRatio.cy);
     ok(EqualRect(&info->rcSrc, &rect), "Got source rect %s.\n", wine_dbgstr_rect(&info->rcSrc));

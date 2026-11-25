@@ -501,7 +501,7 @@ static void decrease_state(JScript *This, SCRIPTSTATE state)
             }
 
             script_globals_release(This->ctx);
-            gc_run(This->ctx);
+            gc_run(This->thread_data);
 
             /* FALLTHROUGH */
         case SCRIPTSTATE_UNINITIALIZED:
@@ -722,6 +722,7 @@ static HRESULT WINAPI JScript_SetScriptSite(IActiveScript *iface,
 {
     JScript *This = impl_from_IActiveScript(iface);
     struct thread_data *thread_data;
+    IServiceProvider *sp;
     named_item_t *item;
     LCID lcid;
     HRESULT hres;
@@ -740,6 +741,11 @@ static HRESULT WINAPI JScript_SetScriptSite(IActiveScript *iface,
     if(InterlockedCompareExchangePointer((void**)&This->thread_data, thread_data, NULL)) {
         release_thread_data(thread_data);
         return E_UNEXPECTED;
+    }
+
+    if(This->html_mode && !thread_data->cc_participant && IActiveScriptSite_QueryInterface(pass, &IID_IServiceProvider, (void**)&sp) == S_OK) {
+        IServiceProvider_QueryService(sp, &IID_IWineCCParticipant, &IID_IWineCCParticipant, (void**)&thread_data->cc_participant);
+        IServiceProvider_Release(sp);
     }
 
     if(!This->ctx) {
@@ -962,7 +968,7 @@ static HRESULT WINAPI JScript_GetScriptDispatch(IActiveScript *iface, LPCOLESTR 
     }
 
     script_obj = This->ctx->global;
-    if(pstrItemName) {
+    if(pstrItemName && *pstrItemName) {
         named_item_t *item = lookup_named_item(This->ctx, pstrItemName, 0);
         if(!item) return E_INVALIDARG;
         if(item->script_obj) script_obj = item->script_obj;
@@ -1477,6 +1483,12 @@ static HRESULT WINAPI WineJScript_CreateObject(IWineJScript *iface, IWineJSDispa
     return hres;
 }
 
+static HRESULT WINAPI WineJScript_CreateArrayBuffer(IWineJScript *iface, DWORD size, IWineJSDispatch **arraybuf, void **data)
+{
+    JScript *This = impl_from_IWineJScript(iface);
+    return create_arraybuffer(This->ctx, size, arraybuf, data);
+}
+
 static HRESULT WINAPI WineJScript_FillGlobals(IWineJScript *iface, IWineJSDispatchHost *script_global)
 {
     JScript *This = impl_from_IWineJScript(iface);
@@ -1490,6 +1502,7 @@ static const IWineJScriptVtbl WineJScriptVtbl = {
     WineJScript_InitHostObject,
     WineJScript_InitHostConstructor,
     WineJScript_CreateObject,
+    WineJScript_CreateArrayBuffer,
     WineJScript_FillGlobals,
 };
 

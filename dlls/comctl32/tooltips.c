@@ -32,7 +32,6 @@
  *   - Animation.
  *   - Links.
  *   - Messages:
- *     o TTM_ADJUSTRECT
  *     o TTM_GETTITLEA
  *     o TTM_GETTTILEW
  *     o TTM_POPUP
@@ -1134,6 +1133,32 @@ TOOLTIPS_AddToolT (TOOLTIPS_INFO *infoPtr, const TTTOOLINFOW *ti, BOOL isW)
     return TRUE;
 }
 
+/* When is_text is TRUE, calculate a window rect from a text rect.
+ * When is_text is FALSE, calculate a text rect from a window rect. */
+static LRESULT
+TOOLTIPS_AdjustRect(TOOLTIPS_INFO *infoPtr, BOOL is_text, RECT *rect)
+{
+    int sign, margin;
+
+    TRACE("hwnd = %p, is_text = %d, rect = %s\n", infoPtr->hwndSelf, is_text, wine_dbgstr_rect(rect));
+
+    if (!rect)
+        return FALSE;
+
+    sign = is_text ? 1 : -1;
+    if ((GetWindowLongW(infoPtr->hwndSelf, GWL_STYLE) & TTS_BALLOON) || infoPtr->pszTitle)
+        margin = BALLOON_TEXT_MARGIN;
+    else
+        margin = NORMAL_TEXT_MARGIN;
+
+    /* TODO: v6 doesn't use rcMargin when handling TTM_ADJUSTRECT */
+    rect->left -= sign * (margin + infoPtr->rcMargin.left);
+    rect->top -= sign * (margin + infoPtr->rcMargin.top);
+    rect->right += sign * (margin + infoPtr->rcMargin.right);
+    rect->bottom += sign * (margin + infoPtr->rcMargin.bottom);
+    return TRUE;
+}
+
 static void TOOLTIPS_ResetSubclass (const TTTOOL_INFO *toolPtr)
 {
     /* Reset subclassing data. */
@@ -2128,6 +2153,9 @@ TOOLTIPS_WindowProc (HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	case TTM_ADDTOOLW:
 	    return TOOLTIPS_AddToolT (infoPtr, (LPTTTOOLINFOW)lParam, uMsg == TTM_ADDTOOLW);
 
+        case TTM_ADJUSTRECT:
+            return TOOLTIPS_AdjustRect (infoPtr, (BOOL)wParam, (RECT *)lParam);
+
 	case TTM_DELTOOLA:
 	case TTM_DELTOOLW:
 	    return TOOLTIPS_DelToolT (infoPtr, (LPTOOLINFOW)lParam,
@@ -2313,25 +2341,15 @@ TOOLTIPS_Register (void)
 
     hTooltipIcons[TTI_NONE] = NULL;
     hTooltipIcons[TTI_INFO] = LoadImageW(COMCTL32_hModule,
-        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_INFO_SM), IMAGE_ICON, 0, 0, 0);
+        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_INFO_SM), IMAGE_ICON, 0, 0, LR_SHARED);
     hTooltipIcons[TTI_WARNING] = LoadImageW(COMCTL32_hModule,
-        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_WARN_SM), IMAGE_ICON, 0, 0, 0);
+        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_WARN_SM), IMAGE_ICON, 0, 0, LR_SHARED);
     hTooltipIcons[TTI_ERROR] = LoadImageW(COMCTL32_hModule,
-        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_ERROR_SM), IMAGE_ICON, 0, 0, 0);
+        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_ERROR_SM), IMAGE_ICON, 0, 0, LR_SHARED);
     hTooltipIcons[TTI_INFO_LARGE] = LoadImageW(COMCTL32_hModule,
-        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_INFO_MD), IMAGE_ICON, 0, 0, 0);
+        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_INFO_MD), IMAGE_ICON, 0, 0, LR_SHARED);
     hTooltipIcons[TTI_WARNING_LARGE] = LoadImageW(COMCTL32_hModule,
-        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_WARN_MD), IMAGE_ICON, 0, 0, 0);
+        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_WARN_MD), IMAGE_ICON, 0, 0, LR_SHARED);
     hTooltipIcons[TTI_ERROR_LARGE] = LoadImageW(COMCTL32_hModule,
-        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_ERROR_MD), IMAGE_ICON, 0, 0, 0);
-}
-
-
-VOID
-TOOLTIPS_Unregister (void)
-{
-    int i;
-    for (i = TTI_INFO; i <= TTI_ERROR; i++)
-        DestroyIcon(hTooltipIcons[i]);
-    UnregisterClassW (TOOLTIPS_CLASSW, NULL);
+        (LPCWSTR)MAKEINTRESOURCE(IDI_TT_ERROR_MD), IMAGE_ICON, 0, 0, LR_SHARED);
 }

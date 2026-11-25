@@ -30,7 +30,7 @@
 #include "vkd3d_common.h"
 #include "vkd3d_blob.h"
 #include "vkd3d_memory.h"
-#include "vkd3d_utf8.h"
+#include "vkd3d_string.h"
 #include "wine/list.h"
 #include "wine/rbtree.h"
 
@@ -53,7 +53,7 @@
 
 #define VKD3D_MAX_COMPATIBLE_FORMAT_COUNT 6u
 #define VKD3D_MAX_QUEUE_FAMILY_COUNT      3u
-#define VKD3D_MAX_SHADER_EXTENSIONS       5u
+#define VKD3D_MAX_SHADER_EXTENSIONS       6u
 #define VKD3D_MAX_SHADER_STAGES           5u
 #define VKD3D_MAX_VK_SYNC_OBJECTS         4u
 #define VKD3D_MAX_DEVICE_BLOCKED_QUEUES  16u
@@ -108,11 +108,10 @@ HRESULT hresult_from_vkd3d_result(int vkd3d_result);
 
 struct vkd3d_device_descriptor_limits
 {
-    unsigned int uniform_buffer_max_descriptors;
-    unsigned int sampled_image_max_descriptors;
-    unsigned int storage_buffer_max_descriptors;
-    unsigned int storage_image_max_descriptors;
-    unsigned int sampler_max_descriptors;
+    unsigned int max_cbv_descriptor_count;
+    unsigned int max_srv_descriptor_count;
+    unsigned int max_uav_descriptor_count;
+    unsigned int max_sampler_descriptor_count;
 };
 
 struct vkd3d_vulkan_info
@@ -131,6 +130,7 @@ struct vkd3d_vulkan_info
     bool KHR_portability_subset;
     bool KHR_push_descriptor;
     bool KHR_sampler_mirror_clamp_to_edge;
+    bool KHR_shader_float_controls;
     bool KHR_timeline_semaphore;
     bool KHR_zero_initialize_workgroup_memory;
     /* EXT device extensions */
@@ -138,12 +138,13 @@ struct vkd3d_vulkan_info
     bool EXT_calibrated_timestamps;
     bool EXT_conditional_rendering;
     bool EXT_debug_marker;
-    bool EXT_depth_range_unrestricted;
     bool EXT_depth_clip_enable;
+    bool EXT_depth_range_unrestricted;
     bool EXT_descriptor_indexing;
     bool EXT_fragment_shader_interlock;
     bool EXT_mutable_descriptor_type;
     bool EXT_robustness2;
+    bool EXT_sampler_filter_minmax;
     bool EXT_shader_demote_to_helper_invocation;
     bool EXT_shader_stencil_export;
     bool EXT_shader_viewport_index_layer;
@@ -163,6 +164,8 @@ struct vkd3d_vulkan_info
 
     VkPhysicalDeviceLimits device_limits;
     struct vkd3d_device_descriptor_limits descriptor_limits;
+
+    VkPhysicalDeviceFloatControlsPropertiesKHR float_controls_properties;
 
     VkPhysicalDeviceSparseProperties sparse_properties;
     bool sparse_binding;
@@ -385,6 +388,8 @@ struct vkd3d_signaled_semaphore
     const struct vkd3d_queue *signalling_queue;
 };
 
+typedef void (*PFN_vkd3d_waiting_event_cleanup)(HANDLE event);
+
 /* ID3D12Fence */
 struct d3d12_fence
 {
@@ -396,11 +401,13 @@ struct d3d12_fence
 
     uint64_t value;
     uint64_t max_pending_value;
+    uint64_t last_waited_value;
     struct vkd3d_mutex mutex;
 
     struct vkd3d_waiting_event
     {
         HANDLE event;
+        PFN_vkd3d_waiting_event_cleanup cleanup;
         PFN_vkd3d_signal_event signal;
         uint64_t value;
     } *events;
@@ -422,8 +429,8 @@ struct d3d12_fence
     struct vkd3d_private_store private_store;
 };
 
-bool d3d12_fence_add_waiting_event(struct d3d12_fence *fence,
-        HANDLE event, PFN_vkd3d_signal_event signal, uint64_t value);
+bool d3d12_fence_add_waiting_event(struct d3d12_fence *fence, HANDLE event,
+        PFN_vkd3d_waiting_event_cleanup cleanup, PFN_vkd3d_signal_event signal, uint64_t value);
 HRESULT d3d12_fence_create(struct d3d12_device *device, uint64_t initial_value,
         D3D12_FENCE_FLAGS flags, struct d3d12_fence **fence);
 struct d3d12_fence *unsafe_impl_from_ID3D12Fence(ID3D12Fence *iface);
@@ -1134,6 +1141,8 @@ struct d3d12_pipeline_state_desc
     D3D12_SHADER_BYTECODE hs;
     D3D12_SHADER_BYTECODE gs;
     D3D12_SHADER_BYTECODE cs;
+    D3D12_SHADER_BYTECODE as;
+    D3D12_SHADER_BYTECODE ms;
     D3D12_STREAM_OUTPUT_DESC stream_output;
     D3D12_BLEND_DESC blend_state;
     unsigned int sample_mask;
@@ -1277,6 +1286,13 @@ enum vkd3d_pipeline_bind_point
     VKD3D_PIPELINE_BIND_POINT_COUNT = 0x2,
 };
 
+struct vkd3d_resource_list
+{
+    struct d3d12_resource **resources;
+    size_t count;
+    size_t capacity;
+};
+
 /* ID3D12CommandList */
 struct d3d12_command_list
 {
@@ -1301,6 +1317,13 @@ struct d3d12_command_list
     unsigned int fb_height;
     unsigned int fb_layer_count;
     VkFormat dsv_format;
+
+    /* Resources for views bound to d3d12 state */
+    struct d3d12_resource *rtv_resources[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT];
+    struct d3d12_resource *dsv_resource;
+    /* Resources bound since the last pipeline barrier */
+    struct vkd3d_resource_list rtv_resources_since_last_barrier;
+    struct vkd3d_resource_list dsv_resources_since_last_barrier;
 
     bool xfb_enabled;
     bool has_depth_bounds;
@@ -1327,8 +1350,9 @@ struct d3d12_command_list
 };
 
 HRESULT d3d12_command_list_create(struct d3d12_device *device,
-        UINT node_mask, D3D12_COMMAND_LIST_TYPE type, ID3D12CommandAllocator *allocator_iface,
-        ID3D12PipelineState *initial_pipeline_state, struct d3d12_command_list **list);
+        UINT node_mask, D3D12_COMMAND_LIST_TYPE type, struct d3d12_command_list **list);
+HRESULT d3d12_command_list_reset(struct d3d12_command_list *list,
+        ID3D12CommandAllocator *allocator_iface, ID3D12PipelineState *initial_pipeline_state);
 
 struct vkd3d_queue
 {
@@ -1768,7 +1792,16 @@ HRESULT return_interface(void *iface, REFIID iface_iid, REFIID requested_iid, vo
 
 const char *debug_cpu_handle(D3D12_CPU_DESCRIPTOR_HANDLE handle);
 const char *debug_d3d12_box(const D3D12_BOX *box);
+const char *debug_d3d12_comparison_func(D3D12_COMPARISON_FUNC f);
+const char *debug_d3d12_descriptor_range(const D3D12_DESCRIPTOR_RANGE *r);
+const char *debug_d3d12_feature(D3D12_FEATURE f);
+const char *debug_d3d12_filter(D3D12_FILTER f);
+const char *debug_d3d12_root_signature_flags(D3D12_ROOT_SIGNATURE_FLAGS flags);
 const char *debug_d3d12_shader_component_mapping(unsigned int mapping);
+const char *debug_d3d12_shader_visibility(D3D12_SHADER_VISIBILITY v);
+const char *debug_d3d12_static_border_color(D3D12_STATIC_BORDER_COLOR c);
+const char *debug_d3d12_texture_address_mode(D3D12_TEXTURE_ADDRESS_MODE m);
+const char *debug_denormal_mode(enum vkd3d_shader_denormal_mode m);
 const char *debug_gpu_handle(D3D12_GPU_DESCRIPTOR_HANDLE handle);
 const char *debug_vk_extent_3d(VkExtent3D extent);
 const char *debug_vk_memory_heap_flags(VkMemoryHeapFlags flags);

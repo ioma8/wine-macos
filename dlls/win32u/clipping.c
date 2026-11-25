@@ -439,7 +439,7 @@ INT WINAPI NtGdiGetRandomRgn( HDC hDC, HRGN hRgn, INT iCode )
         {
             NtGdiCombineRgn( hRgn, dc->hVisRgn, 0, RGN_COPY );
             /* On Windows NT/2000, the SYSRGN returned is in screen coordinates */
-            if (NtCurrentTeb()->Peb->OSPlatformId != VER_PLATFORM_WIN32s)
+            if (RtlGetCurrentPeb()->OSPlatformId != VER_PLATFORM_WIN32s)
                 NtGdiOffsetRgn( hRgn, dc->attr->vis_rect.left, dc->attr->vis_rect.top );
         }
         else if (!IsRectEmpty( &dc->device_rect ))
@@ -463,12 +463,11 @@ INT WINAPI NtGdiGetRandomRgn( HDC hDC, HRGN hRgn, INT iCode )
     if (ret > 0 && (iCode & NTGDI_RGN_MONITOR_DPI))
     {
         HWND hwnd = NtUserWindowFromDC( hDC );
-        UINT raw_dpi;
+        struct ratio scale = get_win_monitor_scale( hwnd );
         HRGN region;
 
-        get_win_monitor_dpi( hwnd, &raw_dpi );
         NtGdiOffsetRgn( hRgn, -dc->attr->vis_rect.left, -dc->attr->vis_rect.top );
-        region = map_dpi_region( hRgn, get_dpi_for_window( hwnd ), raw_dpi );
+        region = map_dpi_region( hRgn, get_dpi_for_window( hwnd ) * scale.den, scale.num );
         NtGdiCombineRgn( hRgn, region, 0, RGN_COPY );
         NtGdiDeleteObjectApp( region );
     }

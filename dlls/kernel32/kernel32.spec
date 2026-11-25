@@ -505,7 +505,7 @@
 @ stdcall -import FindFirstVolumeW(ptr long)
 @ stdcall -import FindNextChangeNotification(long)
 @ stdcall -import FindNextFileA(long ptr)
-# @ stub FindNextFileNameW
+@ stdcall -import FindNextFileNameW(ptr ptr ptr)
 @ stdcall -import FindNextFileW(long ptr)
 @ stdcall -import FindNextStreamW(long ptr)
 @ stdcall FindNextVolumeA(long ptr long)
@@ -732,6 +732,7 @@
 # @ stub GetLongPathNameTransactedA
 # @ stub GetLongPathNameTransactedW
 @ stdcall -import GetLongPathNameW(wstr ptr long)
+@ stdcall -import GetMachineTypeAttributes(long ptr)
 @ stdcall GetMailslotInfo(long ptr ptr ptr ptr)
 @ stdcall GetMaximumProcessorCount(long)
 @ stdcall GetMaximumProcessorGroupCount()
@@ -744,8 +745,8 @@
 @ stdcall -import GetNLSVersion(long long ptr)
 @ stdcall -import GetNLSVersionEx(long wstr ptr)
 # @ stub GetNamedPipeAttribute
-# @ stub GetNamedPipeClientComputerNameA
-# @ stub GetNamedPipeClientComputerNameW
+@ stdcall GetNamedPipeClientComputerNameA(long str long)
+@ stdcall GetNamedPipeClientComputerNameW(long wstr long)
 @ stdcall GetNamedPipeClientProcessId(long ptr)
 @ stdcall GetNamedPipeClientSessionId(long ptr)
 @ stdcall GetNamedPipeHandleStateA(long ptr ptr ptr ptr ptr long)
@@ -1175,6 +1176,7 @@
 @ stdcall -import PeekNamedPipe(long ptr long ptr ptr ptr)
 @ stdcall -import PostQueuedCompletionStatus(long long ptr ptr)
 @ stdcall -import PackageIdFromFullName(wstr long ptr ptr)
+@ stdcall -import PackageFullNameFromId(ptr ptr ptr)
 @ stdcall PowerClearRequest(long long)
 @ stdcall PowerCreateRequest(ptr)
 @ stdcall PowerSetRequest(long long)
@@ -1189,6 +1191,9 @@
 @ stdcall Process32Next (ptr ptr)
 @ stdcall Process32NextW (ptr ptr)
 @ stdcall -import ProcessIdToSessionId(long ptr)
+@ stdcall -import PssCaptureSnapshot(ptr long long ptr)
+@ stdcall -import PssFreeSnapshot(ptr ptr)
+@ stdcall -import PssQuerySnapshot(ptr long ptr long)
 @ stdcall -import PulseEvent(long)
 @ stdcall -import PurgeComm(long long)
 @ stdcall -i386 -private -norelay QT_Thunk() krnl386.exe16.QT_Thunk
@@ -1222,8 +1227,8 @@
 @ stdcall -import RaiseFailFastException(ptr ptr long)
 @ stdcall -import ReadConsoleA(long ptr long ptr ptr)
 @ stdcall -import ReadConsoleInputA(long ptr long ptr)
-@ stub ReadConsoleInputExA
-@ stub ReadConsoleInputExW
+@ stdcall -import ReadConsoleInputExA(long ptr long ptr long)
+@ stdcall -import ReadConsoleInputExW(long ptr long ptr long)
 @ stdcall -import ReadConsoleInputW(long ptr long ptr)
 @ stdcall -import ReadConsoleOutputA(long ptr long long ptr)
 @ stdcall -import ReadConsoleOutputAttribute(long ptr long long ptr)
@@ -1323,15 +1328,15 @@
 @ stdcall -import ResolveLocaleName(wstr ptr long)
 @ stdcall RestoreLastError(long) NTDLL.RtlRestoreLastWin32Error
 @ stdcall -import ResumeThread(long)
-@ cdecl -arch=!i386 RtlAddFunctionTable(ptr long long) NTDLL.RtlAddFunctionTable
+@ cdecl -arch=!i386 RtlAddFunctionTable(ptr long long)
 @ stdcall -norelay -import RtlCaptureContext(ptr)
 @ stdcall RtlCaptureStackBackTrace(long long ptr ptr) NTDLL.RtlCaptureStackBackTrace
 @ stdcall -arch=!i386 RtlCompareMemory(ptr ptr long) NTDLL.RtlCompareMemory
 @ stdcall -arch=!i386 RtlCopyMemory(ptr ptr long) NTDLL.RtlCopyMemory
-@ cdecl -arch=!i386 RtlDeleteFunctionTable(ptr) NTDLL.RtlDeleteFunctionTable
+@ cdecl -arch=!i386 RtlDeleteFunctionTable(ptr)
 @ stdcall RtlFillMemory(ptr long long) NTDLL.RtlFillMemory
-@ cdecl -arch=!i386 RtlInstallFunctionTableCallback(long long long ptr ptr ptr) NTDLL.RtlInstallFunctionTableCallback
-@ stdcall -arch=!i386 RtlLookupFunctionEntry(long ptr ptr) NTDLL.RtlLookupFunctionEntry
+@ cdecl -arch=!i386 RtlInstallFunctionTableCallback(long long long ptr ptr ptr)
+@ stdcall -arch=!i386 RtlLookupFunctionEntry(long ptr ptr)
 @ stdcall RtlMoveMemory(ptr ptr long) NTDLL.RtlMoveMemory
 @ stdcall RtlPcToFileHeader(ptr ptr) NTDLL.RtlPcToFileHeader
 @ stdcall -arch=arm,x86_64 -norelay RtlRaiseException(ptr) NTDLL.RtlRaiseException
@@ -1508,6 +1513,7 @@
 @ stdcall SetThreadpoolThreadMaximum(ptr long) NTDLL.TpSetPoolMaxThreads
 @ stdcall SetThreadpoolThreadMinimum(ptr long) NTDLL.TpSetPoolMinThreads
 @ stdcall SetThreadpoolTimer(ptr ptr long long) NTDLL.TpSetTimer
+@ stdcall SetThreadpoolTimerEx(ptr ptr long long) NTDLL.TpSetTimerEx
 @ stdcall SetThreadpoolWait(ptr long ptr) NTDLL.TpSetWait
 @ stdcall -import SetTimeZoneInformation(ptr)
 @ stub SetTimerQueueTimer
@@ -1540,7 +1546,7 @@
 @ stdcall -import SwitchToThread()
 @ stdcall -import SystemTimeToFileTime(ptr ptr)
 @ stdcall -import SystemTimeToTzSpecificLocalTime (ptr ptr ptr)
-# @ stub SystemTimeToTzSpecificLocalTimeEx
+@ stdcall -import SystemTimeToTzSpecificLocalTimeEx(ptr ptr ptr)
 @ stdcall TerminateJobObject(long long)
 @ stdcall -import TerminateProcess(long long)
 @ stdcall -import TerminateThread(long long)
@@ -1563,7 +1569,7 @@
 @ stdcall TryEnterCriticalSection(ptr) NTDLL.RtlTryEnterCriticalSection
 @ stdcall -import TrySubmitThreadpoolCallback(ptr ptr ptr)
 @ stdcall -import TzSpecificLocalTimeToSystemTime(ptr ptr ptr)
-# @ stub TzSpecificLocalTimeToSystemTimeEx
+@ stdcall -import TzSpecificLocalTimeToSystemTimeEx(ptr ptr ptr)
 # @ stub -arch=x86_64 uaw_lstrcmpW
 # @ stub -arch=x86_64 uaw_lstrcmpiW
 # @ stub -arch=x86_64 uaw_lstrlenW

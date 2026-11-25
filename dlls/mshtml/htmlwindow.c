@@ -47,6 +47,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(mshtml);
 
 static ExternalCycleCollectionParticipant outer_window_ccp;
+static nsresult NSAPI outer_window_unlink(void*);
 
 static int window_map_compare(const void *key, const struct wine_rb_entry *entry)
 {
@@ -207,7 +208,10 @@ static HRESULT WINAPI outer_window_QueryInterface(IHTMLWindow2 *iface, REFIID ri
 
     TRACE("(%p)->(%s %p)\n", This, debugstr_mshtml_guid(riid), ppv);
 
-    if(IsEqualGUID(&IID_nsXPCOMCycleCollectionParticipant, riid)) {
+    if(IsEqualGUID(&IID_IWineGetJSDispatch, riid)) {
+        *ppv = This->base.inner_window ? This->base.inner_window->event_target.dispex.jsdisp : NULL;
+        return S_OK;
+    }else if(IsEqualGUID(&IID_nsXPCOMCycleCollectionParticipant, riid)) {
         *ppv = &outer_window_ccp;
         return S_OK;
     }else if(IsEqualGUID(&IID_nsCycleCollectionISupports, riid)) {
@@ -1411,6 +1415,7 @@ static HRESULT WINAPI HTMLWindow2_resizeBy(IHTMLWindow2 *iface, LONG x, LONG y)
 static HRESULT WINAPI HTMLWindow2_get_external(IHTMLWindow2 *iface, IDispatch **p)
 {
     HTMLWindow *This = impl_from_IHTMLWindow2(iface);
+    HRESULT hres;
 
     TRACE("(%p)->(%p)\n", This, p);
 
@@ -1422,7 +1427,14 @@ static HRESULT WINAPI HTMLWindow2_get_external(IHTMLWindow2 *iface, IDispatch **
     if(!This->outer_window->browser->doc->hostui)
         return S_OK;
 
-    return IDocHostUIHandler_GetExternal(This->outer_window->browser->doc->hostui, p);
+    hres = IDocHostUIHandler_GetExternal(This->outer_window->browser->doc->hostui, p);
+    if(FAILED(hres)) {
+        *p = NULL;
+        if(hres == E_NOINTERFACE)
+            hres = S_OK;
+    }
+
+    return hres;
 }
 
 static const IHTMLWindow2Vtbl HTMLWindow2Vtbl = {
@@ -3190,6 +3202,24 @@ static HRESULT WINAPI window_private_get_console(IWineHTMLWindowPrivate *iface, 
     return S_OK;
 }
 
+static HRESULT WINAPI window_private_get_msCrypto(IWineHTMLWindowPrivate *iface, IDispatch **crypto)
+{
+    HTMLInnerWindow *This = impl_from_IWineHTMLWindowPrivateVtbl(iface)->inner_window;
+
+    TRACE("iface %p, crypto %p.\n", iface, crypto);
+
+    if(!This->crypto) {
+        HRESULT hres = create_crypto(This, &This->crypto);
+        if(FAILED(hres))
+            return hres;
+    }
+
+    *crypto = (IDispatch*)This->crypto;
+    if(This->crypto)
+        IWineMSHTMLCrypto_AddRef(This->crypto);
+    return S_OK;
+}
+
 static const IWineHTMLWindowPrivateVtbl WineHTMLWindowPrivateVtbl = {
     window_private_QueryInterface,
     window_private_AddRef,
@@ -3202,6 +3232,7 @@ static const IWineHTMLWindowPrivateVtbl WineHTMLWindowPrivateVtbl = {
     window_private_cancelAnimationFrame,
     window_private_get_console,
     window_private_matchMedia,
+    window_private_get_msCrypto,
 };
 
 static inline HTMLWindow *impl_from_IWineHTMLWindowCompatPrivateVtbl(IWineHTMLWindowCompatPrivate *iface)
@@ -3532,6 +3563,27 @@ static HRESULT WINAPI WindowDispEx_ToString(IWineJSDispatchHost *iface, BSTR *st
     return IWineJSDispatchHost_ToString(&This->base.inner_window->event_target.dispex.IWineJSDispatchHost_iface, str);
 }
 
+static ULONG WINAPI WindowDispEx_GetRefCount(IWineJSDispatchHost *iface)
+{
+    HTMLOuterWindow *This = impl_from_IWineJSDispatchHost(iface);
+
+    return NS_REFCOUNT_VALUE(This->ccref);
+}
+
+static HRESULT WINAPI WindowDispEx_Traverse(IWineJSDispatchHost *iface, void *context, const struct cc_traverse_ops *ops)
+{
+    HTMLOuterWindow *This = impl_from_IWineJSDispatchHost(iface);
+
+    return cc_participant_Traverse(&cc_participant, &This->base.IHTMLWindow2_iface, &outer_window_ccp, context, ops);
+}
+
+static void WINAPI WindowDispEx_Unlink(IWineJSDispatchHost *iface)
+{
+    HTMLOuterWindow *This = impl_from_IWineJSDispatchHost(iface);
+
+    outer_window_unlink(&This->base.IHTMLWindow2_iface);
+}
+
 static const IWineJSDispatchHostVtbl WindowDispExVtbl = {
     WindowDispEx_QueryInterface,
     WindowDispEx_AddRef,
@@ -3559,6 +3611,9 @@ static const IWineJSDispatchHostVtbl WindowDispExVtbl = {
     WindowDispEx_FillProperties,
     WindowDispEx_GetOuterDispatch,
     WindowDispEx_ToString,
+    WindowDispEx_GetRefCount,
+    WindowDispEx_Traverse,
+    WindowDispEx_Unlink
 };
 
 static inline HTMLOuterWindow *impl_from_IEventTarget(IEventTarget *iface)
@@ -3717,6 +3772,8 @@ static void HTMLWindow_traverse(DispatchEx *dispex, nsCycleCollectionTraversalCa
         note_cc_edge((nsISupports*)This->session_storage, "session_storage", cb);
     if(This->local_storage)
         note_cc_edge((nsISupports*)This->local_storage, "local_storage", cb);
+    if(This->crypto)
+        note_cc_edge((nsISupports*)This->crypto, "crypto", cb);
     if(This->dom_window)
         note_cc_edge((nsISupports*)This->dom_window, "dom_window", cb);
     traverse_variant(&This->performance, "performance", cb);
@@ -3761,6 +3818,11 @@ static void HTMLWindow_unlink(DispatchEx *dispex)
         IHTMLStorage *local_storage = This->local_storage;
         This->local_storage = NULL;
         IHTMLStorage_Release(local_storage);
+    }
+    if(This->crypto) {
+        IWineMSHTMLCrypto *crypto = This->crypto;
+        This->crypto = NULL;
+        IWineMSHTMLCrypto_Release(crypto);
     }
     unlink_variant(&This->performance);
     unlink_ref(&This->dom_window);
@@ -4238,13 +4300,17 @@ static void HTMLWindow_init_dispex_info(dispex_data_t *info, compat_mode_t compa
         {DISPID_UNKNOWN}
     };
     const dispex_hook_t *const window6_hooks = window6_ie9_hooks + 1;
+    static const dispex_hook_t private_ie10_hooks[] = {
+        {DISPID_IWINEHTMLWINDOWPRIVATE_MSCRYPTO},
+        {DISPID_UNKNOWN}
+    };
 
     if(compat_mode >= COMPAT_MODE_IE9)
         dispex_info_add_interface(info, IHTMLWindow7_tid, NULL);
     else
         dispex_info_add_interface(info, IWineHTMLWindowCompatPrivate_tid, NULL);
     if(compat_mode >= COMPAT_MODE_IE10)
-        dispex_info_add_interface(info, IWineHTMLWindowPrivate_tid, NULL);
+        dispex_info_add_interface(info, IWineHTMLWindowPrivate_tid, compat_mode < COMPAT_MODE_IE11 ? private_ie10_hooks : NULL);
 
     dispex_info_add_interface(info, IHTMLWindow6_tid, compat_mode >= COMPAT_MODE_IE9  ? window6_ie9_hooks : window6_hooks);
     if(compat_mode < COMPAT_MODE_IE9)
@@ -4288,7 +4354,7 @@ dispex_static_data_t Window_dispex = {
     .vtbl       = &HTMLWindow_event_target_vtbl.dispex_vtbl,
     .disp_tid   = DispHTMLWindow2_tid,
     .init_info  = HTMLWindow_init_dispex_info,
-    .js_flags   = HOSTOBJ_VOLATILE_FILL,
+    .js_flags   = HOSTOBJ_VOLATILE_FILL | HOSTOBJ_VOLATILE_PROPS,
 };
 
 static nsresult NSAPI outer_window_traverse(void *ccp, void *p, nsCycleCollectionTraversalCallback *cb)
