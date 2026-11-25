@@ -63,17 +63,18 @@ static HRESULT WINAPI client_security_QueryInterface(
     return S_OK;
 }
 
+/* client_security is a singleton, so no ref counting needed */
 static ULONG WINAPI client_security_AddRef(
     IClientSecurity *iface )
 {
-    FIXME("%p\n", iface);
+    TRACE("%p\n", iface);
     return 2;
 }
 
 static ULONG WINAPI client_security_Release(
     IClientSecurity *iface )
 {
-    FIXME("%p\n", iface);
+    TRACE("%p\n", iface);
     return 1;
 }
 
@@ -296,7 +297,7 @@ static HRESULT WINAPI wbem_services_OpenNamespace(
     if (ws->ns != WBEMPROX_NAMESPACE_LAST || !strNamespace)
         return WBEM_E_INVALID_NAMESPACE;
 
-    return WbemServices_create( strNamespace, NULL, (void **)ppWorkingNamespace );
+    return WbemServices_create( strNamespace, pCtx, (void **)ppWorkingNamespace );
 }
 
 static HRESULT WINAPI wbem_services_CancelAsyncCall(
@@ -843,6 +844,7 @@ static HRESULT WINAPI wbem_services_ExecNotificationQueryAsync(
         goto done;
     }
     if (!(query = calloc( 1, sizeof(*query) ))) goto done;
+    query->ns = services->ns;
     async = (struct async_header *)query;
 
     if (!(init_async( async, sink, async_exec_query )))
@@ -1085,7 +1087,7 @@ static HRESULT WINAPI wbem_context_Clone(
 {
     struct wbem_context *context = impl_from_IWbemContext( iface );
     struct wbem_context_value *value;
-    IWbemContext *cloned_context;
+    IWbemContext *cloned_context = NULL;
     HRESULT hr;
 
     TRACE("%p, %p\n", iface, newcopy);
@@ -1105,7 +1107,7 @@ static HRESULT WINAPI wbem_context_Clone(
     else
     {
         *newcopy = NULL;
-        IWbemContext_Release( cloned_context );
+        if (cloned_context) IWbemContext_Release( cloned_context );
     }
 
     return hr;

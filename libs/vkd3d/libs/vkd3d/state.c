@@ -843,7 +843,7 @@ static struct vk_binding_array *d3d12_root_signature_vk_binding_array_for_type(
         {
             if (!context->static_samplers_descriptor_set)
             {
-                if (!context->push_descriptor && context->root_descriptor_set)
+                if (!root_signature->device->vk_info.KHR_push_descriptor && context->root_descriptor_set)
                     context->static_samplers_descriptor_set = context->root_descriptor_set;
                 else
                     /* The descriptor type is irrelevant here, it will never be used. */
@@ -938,19 +938,19 @@ static unsigned int vk_binding_count_from_descriptor_range(const struct d3d12_ro
     switch (range->type)
     {
         case VKD3D_SHADER_DESCRIPTOR_TYPE_CBV:
-            limit = limits->uniform_buffer_max_descriptors;
+            limit = limits->max_cbv_descriptor_count;
             count = (limit - min(info->cbv_count, limit)) / info->cbv_unbounded_range_count;
             break;
         case VKD3D_SHADER_DESCRIPTOR_TYPE_SRV:
-            limit = limits->sampled_image_max_descriptors;
+            limit = limits->max_srv_descriptor_count;
             count = (limit - min(info->srv_count, limit)) / info->srv_unbounded_range_count;
             break;
         case VKD3D_SHADER_DESCRIPTOR_TYPE_UAV:
-            limit = limits->storage_image_max_descriptors;
+            limit = limits->max_uav_descriptor_count;
             count = (limit - min(info->uav_count, limit)) / info->uav_unbounded_range_count;
             break;
         case VKD3D_SHADER_DESCRIPTOR_TYPE_SAMPLER:
-            limit = limits->sampler_max_descriptors;
+            limit = limits->max_sampler_descriptor_count;
             count = (limit - min(info->sampler_count, limit)) / info->sampler_unbounded_range_count;
             break;
         default:
@@ -1084,36 +1084,36 @@ static void vkd3d_descriptor_heap_binding_from_descriptor_range(const struct d3d
         if (range->type == VKD3D_SHADER_DESCRIPTOR_TYPE_SAMPLER)
         {
             binding->set = VKD3D_SET_INDEX_SAMPLER;
-            descriptor_set_size = descriptor_limits->sampler_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_sampler_descriptor_count;
         }
         else
         {
             binding->set = VKD3D_SET_INDEX_MUTABLE;
-            descriptor_set_size = descriptor_limits->sampled_image_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_srv_descriptor_count;
         }
     }
     else switch (range->type)
     {
         case VKD3D_SHADER_DESCRIPTOR_TYPE_SRV:
             binding->set = is_buffer ? VKD3D_SET_INDEX_UNIFORM_TEXEL_BUFFER : VKD3D_SET_INDEX_SAMPLED_IMAGE;
-            descriptor_set_size = descriptor_limits->sampled_image_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_srv_descriptor_count;
             break;
         case VKD3D_SHADER_DESCRIPTOR_TYPE_UAV:
             binding->set = is_buffer ? VKD3D_SET_INDEX_STORAGE_TEXEL_BUFFER : VKD3D_SET_INDEX_STORAGE_IMAGE;
-            descriptor_set_size = descriptor_limits->storage_image_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_uav_descriptor_count;
             break;
         case VKD3D_SHADER_DESCRIPTOR_TYPE_CBV:
             binding->set = VKD3D_SET_INDEX_UNIFORM_BUFFER;
-            descriptor_set_size = descriptor_limits->uniform_buffer_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_cbv_descriptor_count;
             break;
         case VKD3D_SHADER_DESCRIPTOR_TYPE_SAMPLER:
             binding->set = VKD3D_SET_INDEX_SAMPLER;
-            descriptor_set_size = descriptor_limits->sampler_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_sampler_descriptor_count;
             break;
         default:
             FIXME("Unhandled descriptor range type type %#x.\n", range->type);
             binding->set = VKD3D_SET_INDEX_SAMPLED_IMAGE;
-            descriptor_set_size = descriptor_limits->sampled_image_max_descriptors;
+            descriptor_set_size = descriptor_limits->max_srv_descriptor_count;
             break;
     }
     binding->set += root_signature->vk_set_count;
@@ -1151,7 +1151,7 @@ static void d3d12_root_signature_map_vk_heap_uav_counter(struct d3d12_root_signa
     mapping->binding.set = root_signature->vk_set_count + VKD3D_SET_INDEX_UAV_COUNTER;
     mapping->binding.binding = 0;
     mapping->binding.count = vk_heap_binding_count_from_descriptor_range(range,
-            root_signature->device->vk_info.descriptor_limits.storage_image_max_descriptors);
+            root_signature->device->vk_info.descriptor_limits.max_uav_descriptor_count);
     offset->static_offset = range->offset;
     offset->dynamic_offset_index = context->push_constant_index;
 }
@@ -1621,9 +1621,88 @@ static HRESULT d3d12_root_signature_init(struct d3d12_root_signature *root_signa
     const struct vkd3d_vulkan_info *vk_info = &device->vk_info;
     struct vkd3d_descriptor_set_context context;
     struct d3d12_root_signature_info info;
+    const D3D12_ROOT_DESCRIPTOR_TABLE *t;
+    const D3D12_STATIC_SAMPLER_DESC *s;
+    unsigned int i, j, first, last;
+    const D3D12_ROOT_DESCRIPTOR *d;
+    const D3D12_ROOT_CONSTANTS *c;
+    const D3D12_ROOT_PARAMETER *p;
     bool use_vk_heaps;
-    unsigned int i;
     HRESULT hr;
+
+    if (TRACE_ON())
+    {
+        if (desc->NumParameters)
+            TRACE("Parameters:\n");
+        for (i = 0; i < desc->NumParameters; ++i)
+        {
+            p = &desc->pParameters[i];
+            switch (p->ParameterType)
+            {
+                case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
+                    t = &p->u.DescriptorTable;
+                    TRACE("    %u: table, visibility %s.\n", i, debug_d3d12_shader_visibility(p->ShaderVisibility));
+                    for (j = 0; j < t->NumDescriptorRanges; ++j)
+                    {
+                        TRACE("        %u: %s.\n", j, debug_d3d12_descriptor_range(&t->pDescriptorRanges[j]));
+                    }
+                    break;
+
+                case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
+                    c = &p->u.Constants;
+                    first = c->ShaderRegister;
+                    last = first + c->Num32BitValues - 1;
+                    TRACE("    %u: constants[%u:%u], space %u, visibility %s.\n", i, first, last,
+                            c->RegisterSpace, debug_d3d12_shader_visibility(p->ShaderVisibility));
+                    break;
+
+                case D3D12_ROOT_PARAMETER_TYPE_CBV:
+                    d = &p->u.Descriptor;
+                    TRACE("    %u: cbv[%u], space %u, visibility %s.\n", i, d->ShaderRegister,
+                            d->RegisterSpace, debug_d3d12_shader_visibility(p->ShaderVisibility));
+                    break;
+
+                case D3D12_ROOT_PARAMETER_TYPE_SRV:
+                    d = &p->u.Descriptor;
+                    TRACE("    %u: srv[%u], space %u, visibility %s.\n", i, d->ShaderRegister,
+                            d->RegisterSpace, debug_d3d12_shader_visibility(p->ShaderVisibility));
+                    break;
+
+                case D3D12_ROOT_PARAMETER_TYPE_UAV:
+                    d = &p->u.Descriptor;
+                    TRACE("    %u: uav[%u], space %u, visibility %s.\n", i, d->ShaderRegister,
+                            d->RegisterSpace, debug_d3d12_shader_visibility(p->ShaderVisibility));
+                    break;
+
+                default:
+                    TRACE("    %u: UNKNOWN(%#x), visibility %s.\n", i, p->ParameterType,
+                            debug_d3d12_shader_visibility(p->ShaderVisibility));
+                    break;
+            }
+        }
+
+        if (desc->NumStaticSamplers)
+            TRACE("Static samplers:\n");
+        for (i = 0; i < desc->NumStaticSamplers; ++i)
+        {
+            s = &desc->pStaticSamplers[i];
+            TRACE("    %u: sampler[%u], space %u, visibility %s.\n", i, s->ShaderRegister,
+                    s->RegisterSpace, debug_d3d12_shader_visibility(s->ShaderVisibility));
+            TRACE("        filter %s.\n", debug_d3d12_filter(s->Filter));
+            TRACE("        address {%s, %s, %s}.\n",
+                    debug_d3d12_texture_address_mode(s->AddressU),
+                    debug_d3d12_texture_address_mode(s->AddressV),
+                    debug_d3d12_texture_address_mode(s->AddressW));
+            TRACE("        lod-bias %.8e.\n", s->MipLODBias);
+            TRACE("        max-anisotropy %u.\n", s->MaxAnisotropy);
+            TRACE("        comparison %s.\n", debug_d3d12_comparison_func(s->ComparisonFunc));
+            TRACE("        border-colour %s.\n", debug_d3d12_static_border_color(s->BorderColor));
+            TRACE("        min-lod %.8e.\n", s->MinLOD);
+            TRACE("        max-lod %.8e.\n", s->MaxLOD);
+        }
+
+        TRACE("Flags: %s.\n", debug_d3d12_root_signature_flags(desc->Flags));
+    }
 
     memset(&context, 0, sizeof(context));
 
@@ -1644,7 +1723,7 @@ static HRESULT d3d12_root_signature_init(struct d3d12_root_signature *root_signa
 
     if (desc->Flags & ~(D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
             | D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT))
-        FIXME("Ignoring root signature flags %#x.\n", desc->Flags);
+        FIXME("Ignoring root signature flags %s.\n", debug_d3d12_root_signature_flags(desc->Flags));
 
     if (FAILED(hr = d3d12_root_signature_info_from_desc(&info, desc, device->vk_info.EXT_descriptor_indexing)))
         return hr;
@@ -2059,6 +2138,8 @@ static HRESULT pipeline_state_desc_from_d3d12_stream_desc(struct d3d12_pipeline_
         [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS]              = DCL_SUBOBJECT_INFO(D3D12_SHADER_BYTECODE, hs),
         [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS]              = DCL_SUBOBJECT_INFO(D3D12_SHADER_BYTECODE, gs),
         [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS]              = DCL_SUBOBJECT_INFO(D3D12_SHADER_BYTECODE, cs),
+        [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS]              = DCL_SUBOBJECT_INFO(D3D12_SHADER_BYTECODE, as),
+        [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS]              = DCL_SUBOBJECT_INFO(D3D12_SHADER_BYTECODE, ms),
         [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT]   = DCL_SUBOBJECT_INFO(D3D12_STREAM_OUTPUT_DESC, stream_output),
         [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND]           = DCL_SUBOBJECT_INFO(D3D12_BLEND_DESC, blend_state),
         [D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK]     = DCL_SUBOBJECT_INFO(UINT, sample_mask),
@@ -2141,6 +2222,12 @@ static HRESULT pipeline_state_desc_from_d3d12_stream_desc(struct d3d12_pipeline_
             && desc->cs.BytecodeLength && desc->cs.pShaderBytecode)
     {
         WARN("Invalid combination of shader stages VS and CS.\n");
+        return E_INVALIDARG;
+    }
+
+    if (desc->as.BytecodeLength || desc->ms.BytecodeLength)
+    {
+        WARN("Amplification and mesh shaders are not supported.\n");
         return E_INVALIDARG;
     }
 
@@ -2376,9 +2463,19 @@ static unsigned int feature_flags_compile_option(const struct d3d12_device *devi
     return flags;
 }
 
+struct compile_option_overrides
+{
+    enum vkd3d_shader_denormal_mode f16_denormal_mode;
+    enum vkd3d_shader_denormal_mode f32_denormal_mode;
+    enum vkd3d_shader_denormal_mode f64_denormal_mode;
+    uint32_t flags0_override_mask;
+    uint32_t flags0_override_value;
+};
+
 static HRESULT create_shader_stage(struct d3d12_device *device,
         struct VkPipelineShaderStageCreateInfo *stage_desc, enum VkShaderStageFlagBits stage,
-        const D3D12_SHADER_BYTECODE *code, const struct vkd3d_shader_interface_info *shader_interface)
+        const D3D12_SHADER_BYTECODE *code, const struct vkd3d_shader_interface_info *shader_interface,
+        const struct compile_option_overrides *overrides)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     struct vkd3d_shader_compile_info compile_info;
@@ -2391,10 +2488,15 @@ static HRESULT create_shader_stage(struct d3d12_device *device,
 
     const struct vkd3d_shader_compile_option options[] =
     {
-        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_1_17},
+        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_CURRENT},
         {VKD3D_SHADER_COMPILE_OPTION_TYPED_UAV, typed_uav_compile_option(device)},
         {VKD3D_SHADER_COMPILE_OPTION_WRITE_TESS_GEOM_POINT_SIZE, 0},
         {VKD3D_SHADER_COMPILE_OPTION_FEATURE, feature_flags_compile_option(device)},
+        {VKD3D_SHADER_COMPILE_OPTION_DENORMAL_MODE_F16, overrides->f16_denormal_mode},
+        {VKD3D_SHADER_COMPILE_OPTION_DENORMAL_MODE_F32, overrides->f32_denormal_mode},
+        {VKD3D_SHADER_COMPILE_OPTION_DENORMAL_MODE_F64, overrides->f64_denormal_mode},
+        {VKD3D_SHADER_COMPILE_OPTION_GLOBAL_FLAGS0_OVERRIDE_MASK, overrides->flags0_override_mask},
+        {VKD3D_SHADER_COMPILE_OPTION_GLOBAL_FLAGS0_OVERRIDE_VALUE, overrides->flags0_override_value},
     };
 
     stage_desc->sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -2449,19 +2551,20 @@ static HRESULT create_shader_stage(struct d3d12_device *device,
 }
 
 static int vkd3d_scan_dxbc(const struct d3d12_device *device, const D3D12_SHADER_BYTECODE *code,
-        struct vkd3d_shader_scan_descriptor_info *descriptor_info)
+        struct vkd3d_shader_scan_descriptor_info *descriptor_info,
+        struct vkd3d_shader_scan_denormal_mode_info *denormal_info)
 {
     struct vkd3d_shader_compile_info compile_info;
     enum vkd3d_result ret;
 
     const struct vkd3d_shader_compile_option options[] =
     {
-        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_1_17},
+        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_CURRENT},
         {VKD3D_SHADER_COMPILE_OPTION_TYPED_UAV, typed_uav_compile_option(device)},
     };
 
     compile_info.type = VKD3D_SHADER_STRUCTURE_TYPE_COMPILE_INFO;
-    compile_info.next = descriptor_info;
+    compile_info.next = NULL;
     compile_info.source.code = code->pShaderBytecode;
     compile_info.source.size = code->BytecodeLength;
     compile_info.target_type = VKD3D_SHADER_TARGET_SPIRV_BINARY;
@@ -2469,6 +2572,20 @@ static int vkd3d_scan_dxbc(const struct d3d12_device *device, const D3D12_SHADER
     compile_info.option_count = ARRAY_SIZE(options);
     compile_info.log_level = VKD3D_SHADER_LOG_NONE;
     compile_info.source_name = NULL;
+
+    if (denormal_info)
+    {
+        denormal_info->type = VKD3D_SHADER_STRUCTURE_TYPE_SCAN_DENORMAL_MODE_INFO;
+        denormal_info->next = compile_info.next;
+        compile_info.next = denormal_info;
+    }
+
+    if (descriptor_info)
+    {
+        descriptor_info->type = VKD3D_SHADER_STRUCTURE_TYPE_SCAN_DESCRIPTOR_INFO;
+        descriptor_info->next = compile_info.next;
+        compile_info.next = descriptor_info;
+    }
 
     if ((ret = vkd3d_shader_parse_dxbc_source_type(&compile_info.source, &compile_info.source_type, NULL)) < 0)
         return ret;
@@ -2478,7 +2595,8 @@ static int vkd3d_scan_dxbc(const struct d3d12_device *device, const D3D12_SHADER
 
 static HRESULT vkd3d_create_compute_pipeline(struct d3d12_device *device,
         const D3D12_SHADER_BYTECODE *code, const struct vkd3d_shader_interface_info *shader_interface,
-        VkPipelineLayout vk_pipeline_layout, VkPipeline *vk_pipeline)
+        VkPipelineLayout vk_pipeline_layout, VkPipeline *vk_pipeline,
+        const struct compile_option_overrides *overrides)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkComputePipelineCreateInfo pipeline_info;
@@ -2489,7 +2607,7 @@ static HRESULT vkd3d_create_compute_pipeline(struct d3d12_device *device,
     pipeline_info.pNext = NULL;
     pipeline_info.flags = 0;
     if (FAILED(hr = create_shader_stage(device, &pipeline_info.stage,
-            VK_SHADER_STAGE_COMPUTE_BIT, code, shader_interface)))
+            VK_SHADER_STAGE_COMPUTE_BIT, code, shader_interface, overrides)))
         return hr;
     pipeline_info.layout = vk_pipeline_layout;
     pipeline_info.basePipelineHandle = VK_NULL_HANDLE;
@@ -2608,24 +2726,23 @@ static HRESULT d3d12_pipeline_state_init_uav_counters(struct d3d12_pipeline_stat
     return S_OK;
 }
 
-static HRESULT d3d12_pipeline_state_find_and_init_uav_counters(struct d3d12_pipeline_state *state,
+static HRESULT d3d12_pipeline_state_scan_shader(struct d3d12_pipeline_state *state,
         struct d3d12_device *device, const struct d3d12_root_signature *root_signature,
-        const D3D12_SHADER_BYTECODE *code, VkShaderStageFlags stage_flags)
+        const D3D12_SHADER_BYTECODE *code, VkShaderStageFlags stage_flags,
+        struct vkd3d_shader_scan_denormal_mode_info *denorm_info)
 {
     struct vkd3d_shader_scan_descriptor_info shader_info;
     HRESULT hr;
     int ret;
 
-    if (device->use_vk_heaps)
-        return S_OK;
-
-    shader_info.type = VKD3D_SHADER_STRUCTURE_TYPE_SCAN_DESCRIPTOR_INFO;
-    shader_info.next = NULL;
-    if ((ret = vkd3d_scan_dxbc(device, code, &shader_info)) < 0)
+    if ((ret = vkd3d_scan_dxbc(device, code, device->use_vk_heaps ? NULL : &shader_info, denorm_info)) < 0)
     {
         WARN("Failed to scan shader bytecode, stage %#x, vkd3d result %d.\n", stage_flags, ret);
         return hresult_from_vkd3d_result(ret);
     }
+
+    if (device->use_vk_heaps)
+        return S_OK;
 
     if (FAILED(hr = d3d12_pipeline_state_init_uav_counters(state, device, root_signature, &shader_info, stage_flags)))
         WARN("Failed to create descriptor set layout for UAV counters, hr %s.\n", debugstr_hresult(hr));
@@ -2635,14 +2752,82 @@ static HRESULT d3d12_pipeline_state_find_and_init_uav_counters(struct d3d12_pipe
     return hr;
 }
 
+static void d3d12_device_select_overrides(struct d3d12_device *device,
+        const struct vkd3d_shader_scan_denormal_mode_info *denorm_info,
+        struct compile_option_overrides *overrides)
+{
+    const VkPhysicalDeviceFloatControlsPropertiesKHR *float_control_props;
+
+    float_control_props = &device->vk_info.float_controls_properties;
+
+    /* f16 is currently unsupported. */
+    if (denorm_info->f16_denormal_mode != VKD3D_SHADER_DENORMAL_MODE_ANY)
+        WARN("Shader has unexpected f16 denormal mode %s.\n", debug_denormal_mode(denorm_info->f16_denormal_mode));
+
+    overrides->f16_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_ANY;
+
+    /* f32 might have any denormal mode. */
+    if (denorm_info->f32_denormal_mode == VKD3D_SHADER_DENORMAL_MODE_FLUSH_TO_ZERO
+            && float_control_props->shaderDenormFlushToZeroFloat32)
+        overrides->f32_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_FLUSH_TO_ZERO;
+    else if (denorm_info->f32_denormal_mode == VKD3D_SHADER_DENORMAL_MODE_PRESERVE
+            && float_control_props->shaderDenormPreserveFloat32)
+        overrides->f32_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_PRESERVE;
+    else
+        overrides->f32_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_ANY;
+
+    /* f64 might be ANY or PRESERVE, but if we don't have enough independence
+     * we let f32 prevail on the ground that it's expected to be more commonly
+     * used. */
+    if (denorm_info->f64_denormal_mode != VKD3D_SHADER_DENORMAL_MODE_ANY
+            && denorm_info->f64_denormal_mode != VKD3D_SHADER_DENORMAL_MODE_PRESERVE)
+        WARN("Shader has unexpected f64 denormal mode %s.\n", debug_denormal_mode(denorm_info->f64_denormal_mode));
+
+    if (float_control_props->denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE_KHR)
+        /* Here we assume that if f32 and f64 are not independent then they
+         * have the same set of allowed values. I can't see that written in
+         * the specification, but it seems reasonable enough. */
+        overrides->f64_denormal_mode = overrides->f32_denormal_mode;
+    else if (denorm_info->f64_denormal_mode == VKD3D_SHADER_DENORMAL_MODE_PRESERVE
+            && float_control_props->shaderDenormPreserveFloat64)
+        overrides->f64_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_PRESERVE;
+    else
+        overrides->f64_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_ANY;
+
+    if (overrides->f16_denormal_mode != denorm_info->f16_denormal_mode)
+        WARN("Overriding f16 denormal mode from %s to %s.\n", debug_denormal_mode(denorm_info->f16_denormal_mode),
+                debug_denormal_mode(overrides->f16_denormal_mode));
+    if (overrides->f32_denormal_mode != denorm_info->f32_denormal_mode)
+        WARN("Overriding f32 denormal mode from %s to %s.\n", debug_denormal_mode(denorm_info->f32_denormal_mode),
+                debug_denormal_mode(overrides->f32_denormal_mode));
+    if (overrides->f64_denormal_mode != denorm_info->f64_denormal_mode)
+        WARN("Overriding f64 denormal mode from %s to %s.\n", debug_denormal_mode(denorm_info->f64_denormal_mode),
+                debug_denormal_mode(overrides->f64_denormal_mode));
+
+    overrides->flags0_override_mask = 0;
+    overrides->flags0_override_value = 0;
+
+    if (!device->vk_info.KHR_shader_float_controls
+            || !float_control_props->shaderSignedZeroInfNanPreserveFloat16
+            || !float_control_props->shaderSignedZeroInfNanPreserveFloat32
+            || !float_control_props->shaderSignedZeroInfNanPreserveFloat64)
+    {
+        overrides->flags0_override_mask |= VKD3D_SHADER_GLOBAL_FLAGS0_REFACTORING_ALLOWED;
+        overrides->flags0_override_value |= VKD3D_SHADER_GLOBAL_FLAGS0_REFACTORING_ALLOWED;
+        WARN("Overriding VKD3D_SHADER_GLOBAL_FLAGS0_REFACTORING_ALLOWED to 1.\n");
+    }
+}
+
 static HRESULT d3d12_pipeline_state_init_compute(struct d3d12_pipeline_state *state,
         struct d3d12_device *device, const struct d3d12_pipeline_state_desc *desc)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    struct vkd3d_shader_scan_denormal_mode_info denorm_info;
     struct vkd3d_shader_interface_info shader_interface;
     struct vkd3d_shader_descriptor_offset_info offset_info;
     struct vkd3d_shader_spirv_target_info target_info;
     struct d3d12_root_signature *root_signature;
+    struct compile_option_overrides overrides;
     VkPipelineLayout vk_pipeline_layout;
     HRESULT hr;
 
@@ -2667,13 +2852,15 @@ static HRESULT d3d12_pipeline_state_init_compute(struct d3d12_pipeline_state *st
         state->implicit_root_signature = NULL;
     }
 
-    if (FAILED(hr = d3d12_pipeline_state_find_and_init_uav_counters(state, device, root_signature,
-            &desc->cs, VK_SHADER_STAGE_COMPUTE_BIT)))
+    if (FAILED(hr = d3d12_pipeline_state_scan_shader(state, device, root_signature,
+            &desc->cs, VK_SHADER_STAGE_COMPUTE_BIT, &denorm_info)))
     {
         if (state->implicit_root_signature)
             d3d12_root_signature_Release(state->implicit_root_signature);
         return hr;
     }
+
+    d3d12_device_select_overrides(device, &denorm_info, &overrides);
 
     memset(&target_info, 0, sizeof(target_info));
     target_info.type = VKD3D_SHADER_STRUCTURE_TYPE_SPIRV_TARGET_INFO;
@@ -2714,7 +2901,7 @@ static HRESULT d3d12_pipeline_state_init_compute(struct d3d12_pipeline_state *st
     vk_pipeline_layout = state->uav_counters.vk_pipeline_layout
             ? state->uav_counters.vk_pipeline_layout : root_signature->vk_pipeline_layout;
     if (FAILED(hr = vkd3d_create_compute_pipeline(device, &desc->cs, &shader_interface,
-            vk_pipeline_layout, &state->u.compute.vk_pipeline)))
+            vk_pipeline_layout, &state->u.compute.vk_pipeline, &overrides)))
     {
         WARN("Failed to create Vulkan compute pipeline, hr %s.\n", debugstr_hresult(hr));
         d3d12_pipeline_uav_counter_state_cleanup(&state->uav_counters, device);
@@ -3496,13 +3683,17 @@ static HRESULT d3d12_pipeline_state_init_graphics(struct d3d12_pipeline_state *s
     for (i = 0; i < ARRAY_SIZE(shader_stages); ++i)
     {
         const D3D12_SHADER_BYTECODE *b = (const void *)((uintptr_t)desc + shader_stages[i].offset);
+        struct vkd3d_shader_scan_denormal_mode_info denorm_info;
+        struct compile_option_overrides overrides;
 
         if (!b->pShaderBytecode)
             continue;
 
-        if (FAILED(hr = d3d12_pipeline_state_find_and_init_uav_counters(state, device, root_signature,
-                b, shader_stages[i].stage)))
+        if (FAILED(hr = d3d12_pipeline_state_scan_shader(state, device, root_signature,
+                b, shader_stages[i].stage, &denorm_info)))
             goto fail;
+
+        d3d12_device_select_overrides(device, &denorm_info, &overrides);
 
         shader_interface.uav_counters = NULL;
         shader_interface.uav_counter_count = 0;
@@ -3551,7 +3742,7 @@ static HRESULT d3d12_pipeline_state_init_graphics(struct d3d12_pipeline_state *s
             vkd3d_prepend_struct(&shader_interface, &signature_info);
 
         if (FAILED(hr = create_shader_stage(device, &graphics->stages[graphics->stage_count],
-                shader_stages[i].stage, b, &shader_interface)))
+                shader_stages[i].stage, b, &shader_interface, &overrides)))
             goto fail;
 
         ++graphics->stage_count;
@@ -4135,7 +4326,7 @@ static int compile_hlsl_cs(const struct vkd3d_shader_code *hlsl, struct vkd3d_sh
 
     static const struct vkd3d_shader_compile_option options[] =
     {
-        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_1_17},
+        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_CURRENT},
     };
 
     info.type = VKD3D_SHADER_STRUCTURE_TYPE_COMPILE_INFO;
@@ -4301,6 +4492,15 @@ HRESULT vkd3d_uav_clear_state_init(struct vkd3d_uav_clear_state *state, struct d
 
     for (i = 0; i < ARRAY_SIZE(pipelines); ++i)
     {
+        static const struct compile_option_overrides overrides =
+        {
+            .f16_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_ANY,
+            .f32_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_ANY,
+            .f64_denormal_mode = VKD3D_SHADER_DENORMAL_MODE_ANY,
+            .flags0_override_mask = VKD3D_SHADER_GLOBAL_FLAGS0_REFACTORING_ALLOWED,
+            .flags0_override_value = VKD3D_SHADER_GLOBAL_FLAGS0_REFACTORING_ALLOWED,
+        };
+
         struct vkd3d_shader_code dxbc;
         int ret;
 
@@ -4317,7 +4517,7 @@ HRESULT vkd3d_uav_clear_state_init(struct vkd3d_uav_clear_state *state, struct d
             binding.flags = VKD3D_SHADER_BINDING_FLAG_IMAGE;
 
         hr = vkd3d_create_compute_pipeline(device, &(D3D12_SHADER_BYTECODE){dxbc.code, dxbc.size},
-                &shader_interface, *pipelines[i].pipeline_layout, pipelines[i].pipeline);
+                &shader_interface, *pipelines[i].pipeline_layout, pipelines[i].pipeline, &overrides);
         vkd3d_shader_free_shader_code(&dxbc);
         if (FAILED(hr))
         {

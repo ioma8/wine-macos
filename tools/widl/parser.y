@@ -94,6 +94,7 @@ static statement_t *make_statement_parameterized_type( struct location where, ty
 static statement_t *make_statement_delegate( struct location where, type_t *ret, var_list_t *args );
 static statement_list_t *append_statement(statement_list_t *list, statement_t *stmt);
 static statement_list_t *append_statements(statement_list_t *, statement_list_t *);
+static statement_list_t *insert_statement( statement_list_t *list, statement_t *stmt );
 
 static struct namespace global_namespace = {
     NULL, NULL, LIST_INIT(global_namespace.entry), LIST_INIT(global_namespace.children)
@@ -466,7 +467,7 @@ imp_statements
 
 int_statements
 	: %empty				{ $$ = NULL; }
-	| int_statements statement		{ $$ = append_statement($1, $2); }
+	| int_statements statement		{ $$ = insert_statement( $1, $2 ); }
 	;
 
 semicolon_opt
@@ -1941,6 +1942,7 @@ var_t *make_var(char *name)
   v->eval = NULL;
   init_location( &v->where, NULL, NULL );
   v->is_defined = 1;
+  v->overload = 0;
   return v;
 }
 
@@ -3223,6 +3225,23 @@ static statement_list_t *append_statement(statement_list_t *list, statement_t *s
     return list;
 }
 
+/* insert a method declaration statement before any previously declared overload */
+static statement_list_t *insert_statement( statement_list_t *list, statement_t *stmt )
+{
+    statement_t *next = NULL;
+    const char *name;
+
+    if (!list || !is_function_declaration( stmt )) return append_statement( list, stmt );
+
+    name = xstrdup( get_name( stmt->u.var ) );
+    STATEMENTS_FOR_EACH_FUNC( next, list ) if (!strcmp( name, get_name( next->u.var ) )) break;
+    if (!next) return append_statement( list, stmt );
+
+    if (&next->entry != list) stmt->u.var->overload = next->u.var->overload + 1;
+    list_add_before( &next->entry, &stmt->entry );
+    return list;
+}
+
 type_t *find_parameterized_type(type_t *type, typeref_list_t *params)
 {
     char *name = format_parameterized_type_name(type, params);
@@ -3239,4 +3258,15 @@ type_t *find_parameterized_type(type_t *type, typeref_list_t *params)
 
     free(name);
     return type;
+}
+
+void parser_reset( void )
+{
+    memset( &global_namespace, 0, sizeof(global_namespace) );
+    list_init( &global_namespace.entry );
+    list_init( &global_namespace.children );
+    current_namespace = &global_namespace;
+    parameters_namespace = NULL;
+    parameterized_type_stmts = NULL;
+    memset( const_hash, 0, sizeof(const_hash) );
 }

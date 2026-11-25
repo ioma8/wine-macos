@@ -56,10 +56,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(appwizcpl);
 #define GECKO_SHA "???"
 #endif
 
-#define MONO_VERSION "10.3.0"
+#define MONO_VERSION "11.3.0"
 #if defined(__i386__) || defined(__x86_64__)
 #define MONO_ARCH "x86"
-#define MONO_SHA "cece5c63180094dffdf01d0fbe362a4b606e5280b98cdfd1b8568cdf9b572f98"
+#define MONO_SHA "df2dfc1665c2511882e7cabd56eafd0c0a3d94e5a7e86f969277f6c189d418d3"
+#elif defined(__aarch64__)
+#define MONO_ARCH "arm64"
+#define MONO_SHA "b0c47d374efaf22cbff76cb10488ac2d1627b067e085aef7acec573884120e0f"
 #else
 #define MONO_ARCH ""
 #define MONO_SHA "???"
@@ -71,6 +74,7 @@ typedef struct {
     const WCHAR *subdir_name;
     const char *sha;
     const char *url_default;
+    const char *arch;
     const WCHAR *config_key;
     const WCHAR *url_config_key;
     const WCHAR *dir_config_key;
@@ -87,6 +91,7 @@ static const addon_info_t addons_info[] = {
         L"gecko",
         GECKO_SHA,
         "http://source.winehq.org/winegecko.php",
+        GECKO_ARCH,
         L"MSHTML", L"GeckoUrl", L"GeckoCabDir",
         MAKEINTRESOURCEW(ID_DWL_GECKO_DIALOG)
     },
@@ -96,6 +101,7 @@ static const addon_info_t addons_info[] = {
         L"mono",
         MONO_SHA,
         "http://source.winehq.org/winemono.php",
+        MONO_ARCH,
         L"Dotnet", L"MonoUrl", L"MonoCabDir",
         MAKEINTRESOURCEW(ID_DWL_MONO_DIALOG)
     }
@@ -323,7 +329,7 @@ static WCHAR *get_cache_file_name(BOOL ensure_exists)
     WCHAR *cache_dir=NULL, *ret;
     size_t len, size;
 
-    xdg_dir = _wgetenv( L"XDG_CACHE_HOME" );
+    xdg_dir = _wgetenv( L"WINE_HOST_XDG_CACHE_HOME" );
     if (xdg_dir && *xdg_dir)
     {
         if (!(cache_dir = HeapAlloc( GetProcessHeap(), 0, wcslen(xdg_dir) * sizeof(WCHAR) + sizeof(L"\\\\?\\unix") ))) return NULL;
@@ -457,32 +463,36 @@ static HRESULT WINAPI InstallCallback_OnProgress(IBindStatusCallback *iface, ULO
     return S_OK;
 }
 
-static HRESULT WINAPI InstallCallback_OnStopBinding(IBindStatusCallback *iface,
-        HRESULT hresult, LPCWSTR szError)
+static void report_download_failure(void)
 {
     WCHAR message[256];
 
+    if(LoadStringW(hInst, IDS_DOWNLOAD_FAILED, message, ARRAY_SIZE(message)))
+        MessageBoxW(install_dialog, message, NULL, MB_ICONERROR);
+    EndDialog(install_dialog, IDCANCEL);
+}
+
+static HRESULT WINAPI InstallCallback_OnStopBinding(IBindStatusCallback *iface,
+        HRESULT hresult, LPCWSTR szError)
+{
     if(dwl_binding) {
         IBinding_Release(dwl_binding);
         dwl_binding = NULL;
     }
 
     if(FAILED(hresult)) {
-        if(hresult == E_ABORT)
+        if(hresult == E_ABORT) {
             TRACE("Binding aborted\n");
-        else if (hresult == INET_E_DOWNLOAD_FAILURE)
-        {
-            if(LoadStringW(hInst, IDS_DOWNLOAD_FAILED, message, ARRAY_SIZE(message)))
-                MessageBoxW(install_dialog, message, NULL, MB_ICONERROR);
-            EndDialog(install_dialog, IDCANCEL);
+            return S_OK;
         }
-        else
-            ERR("Binding failed %08lx\n", hresult);
+        ERR("Binding failed %08lx\n", hresult);
+        report_download_failure();
         return S_OK;
     }
 
     if(!msi_file) {
         ERR("No MSI file\n");
+        report_download_failure();
         return E_FAIL;
     }
 
@@ -500,13 +510,11 @@ static HRESULT WINAPI InstallCallback_OnStopBinding(IBindStatusCallback *iface,
             free(cache_file_name);
         }
     }else {
+        WCHAR message[256];
+
         if(LoadStringW(hInst, IDS_INVALID_SHA, message, ARRAY_SIZE(message)))
             MessageBoxW(NULL, message, NULL, MB_ICONERROR);
     }
-
-    DeleteFileW(msi_file);
-    free(msi_file);
-    msi_file = NULL;
 
     EndDialog(install_dialog, 0);
     return S_OK;
@@ -612,7 +620,7 @@ static void append_url_params( WCHAR *url )
 
     lstrcpyW(url+len, L"?arch=");
     len += lstrlenW(L"?arch=");
-    len += MultiByteToWideChar(CP_ACP, 0, GECKO_ARCH, sizeof(GECKO_ARCH),
+    len += MultiByteToWideChar(CP_ACP, 0, addon->arch, strlen(addon->arch) + 1,
                                url+len, size/sizeof(WCHAR)-len)-1;
     lstrcpyW(url+len, L"&v=");
     len += lstrlenW(L"&v=");
@@ -752,10 +760,10 @@ static INT_PTR CALLBACK installer_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
 BOOL install_addon(addon_t addon_type)
 {
-    if(!*GECKO_ARCH)
-        return FALSE;
-
     addon = addons_info+addon_type;
+
+    if(!*addon->arch)
+        return FALSE;
 
     p_wine_get_version = (void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
 
@@ -772,7 +780,16 @@ BOOL install_addon(addon_t addon_type)
         && install_from_default_dir() == INSTALL_NEXT
         && install_from_cache() == INSTALL_NEXT
         && (url = get_url()))
+    {
         DialogBoxW(hInst, addon->dialog_template, 0, installer_proc);
+
+        if (msi_file)
+        {
+            DeleteFileW(msi_file);
+            free(msi_file);
+            msi_file = NULL;
+        }
+    }
 
     free(url);
     url = NULL;

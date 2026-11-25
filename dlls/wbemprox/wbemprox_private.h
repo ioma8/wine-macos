@@ -23,6 +23,7 @@ enum wbm_namespace
 {
     WBEMPROX_NAMESPACE_CIMV2,
     WBEMPROX_NAMESPACE_MS_WINDOWS_STORAGE,
+    WBEMPROX_NAMESPACE_SECURITYCENTER2,
     WBEMPROX_NAMESPACE_STANDARDCIMV2,
     WBEMPROX_NAMESPACE_WMI,
     WBEMPROX_NAMESPACE_LAST,
@@ -255,6 +256,7 @@ HRESULT EnumWbemClassObject_create(struct query *, LPVOID *);
 HRESULT WbemQualifierSet_create(enum wbm_namespace, const WCHAR *, const WCHAR *, LPVOID *);
 
 HRESULT process_get_owner(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
+HRESULT process_get_owner_sid(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT process_create(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT reg_create_key(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT reg_enum_key(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
@@ -264,6 +266,7 @@ HRESULT reg_get_stringvalue(IWbemClassObject *obj, IWbemContext *context, IWbemC
 HRESULT reg_set_stringvalue(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT reg_set_dwordvalue(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT reg_delete_key(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
+HRESULT service_change_start_mode(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT service_pause_service(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT service_resume_service(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);
 HRESULT service_start_service(IWbemClassObject *obj, IWbemContext *context, IWbemClassObject *in, IWbemClassObject **out);

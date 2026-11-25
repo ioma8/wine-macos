@@ -1,7 +1,6 @@
 MODULE    = twain_32.dll
-IMPORTS   = user32
+ENABLE_ARCHS = i386
+EXTRADLLFLAGS = -Wb,--data-only
 
 SOURCES = \
-	dsm_ctrl.c \
-	twain.rc \
-	twain32_main.c
+	twain_32.spec

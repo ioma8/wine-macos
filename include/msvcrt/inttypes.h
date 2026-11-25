@@ -135,6 +135,7 @@ typedef struct {
  *   no length identifiers
  */
 
+#define SCNd8  "hhd"
 #define SCNd16 "hd"
 #define SCNd32 "d"
 #define SCNd64 PRId64
@@ -149,6 +150,7 @@ typedef struct {
 
 #define SCNdMAX PRId64
 
+#define SCNi8  "hhi"
 #define SCNi16 "hi"
 #define SCNi32 "i"
 #define SCNi64 PRIi64
@@ -163,6 +165,7 @@ typedef struct {
 
 #define SCNiMAX PRIi64
 
+#define SCNo8  "hho"
 #define SCNo16 "ho"
 #define SCNo32 "o"
 #define SCNo64 PRIo64
@@ -177,6 +180,7 @@ typedef struct {
 
 #define SCNoMAX PRIo64
 
+#define SCNx8  "hhx"
 #define SCNx16 "hx"
 #define SCNx32 "x"
 #define SCNx64 PRIx64
@@ -193,6 +197,7 @@ typedef struct {
 
 /* fscanf macros for unsigned int types */
 
+#define SCNu8  "hhu"
 #define SCNu16 "hu"
 #define SCNu32 "u"
 #define SCNu64 PRIu64
@@ -233,11 +238,16 @@ typedef struct {
 #define SCNuPTR "u"
 #endif
 
+_ACRTIMP intmax_t           __cdecl imaxabs(intmax_t);
 _ACRTIMP imaxdiv_t          __cdecl imaxdiv(intmax_t, intmax_t);
 _ACRTIMP __int64            __cdecl strtoimax(const char*,char**,int);
 _ACRTIMP __int64            __cdecl strtoimax_l(const char*,char**,int,_locale_t);
 _ACRTIMP unsigned __int64   __cdecl strtoumax(const char*,char**,int);
 _ACRTIMP unsigned __int64   __cdecl strtoumax_l(const char*,char**,int,_locale_t);
+_ACRTIMP __int64            __cdecl wcstoimax(const wchar_t*,wchar_t**,int);
+_ACRTIMP __int64            __cdecl wcstoimax_l(const wchar_t*,wchar_t**,int,_locale_t);
+_ACRTIMP unsigned __int64   __cdecl wcstoumax(const wchar_t*,wchar_t**,int);
+_ACRTIMP unsigned __int64   __cdecl wcstoumax_l(const wchar_t*,wchar_t**,int,_locale_t);
 
 #ifdef	__cplusplus
 }

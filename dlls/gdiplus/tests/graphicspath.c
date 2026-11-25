@@ -154,6 +154,8 @@ static void test_getpathdata(void)
     GpPath *path;
     GpPathData data;
     GpStatus status;
+    GpPointF points[4];
+    BYTE types[4];
     INT count;
 
     status = GdipCreatePath(FillModeAlternate, &path);
@@ -177,6 +179,37 @@ static void test_getpathdata(void)
 
     GdipFree(data.Points);
     GdipFree(data.Types);
+
+    for (count = 0; count < 2; count++)
+    {
+        data.Count = count;
+        data.Points = points;
+        data.Types = types;
+        status = GdipGetPathData(path, &data);
+        expect(OutOfMemory, status);
+        expect(count, data.Count);
+    }
+
+    memset(points, 0, sizeof(points));
+    memset(types, 0, sizeof(types));
+    data.Count = 4;
+    status = GdipGetPathData(path, &data);
+    expect(Ok, status);
+    expect(2, data.Count);
+    ok(points[1].X == 100.0 && points[1].Y == 50.0, "got %.2f,%.2f\n", points[1].X, points[1].Y);
+    expect(PathPointTypeLine, types[1]);
+
+    data.Count = 0;
+    data.Points = NULL;
+    data.Types = types;
+    status = GdipGetPathData(path, &data);
+    expect(InvalidParameter, status);
+
+    data.Points = points;
+    data.Types = NULL;
+    status = GdipGetPathData(path, &data);
+    expect(InvalidParameter, status);
+
     GdipDeletePath(path);
 }
 
@@ -1465,6 +1498,190 @@ static void test_flatten(void)
     GdipDeletePath(path);
 }
 
+static void test_flatten_degenerate(void)
+{
+    static const struct
+    {
+        GpPointF pt[4];
+        REAL flatness;
+        INT count;
+    }
+    tests[] =
+    {
+        {{{ 10.0, 10.0 }, { 13.0, 50.0 }, { 80.0, -20.0 }, { 110.0, 10.0 }}, 0.0, 2},
+        {{{ INFINITY, INFINITY }, { INFINITY, INFINITY }, { INFINITY, INFINITY }, { INFINITY, INFINITY }}, 0.25, 2},
+        {{{ NAN, NAN }, { NAN, NAN }, { NAN, NAN }, { NAN, NAN }}, 0.25, 2},
+        {{{ 1e7, 1e7 }, { 1e7 + 3.0, 1e7 + 40.0 }, { 1e7 + 70.0, 1e7 - 30.0 }, { 1e7 + 100.0, 1e7 }}, 0.25, 0},
+    };
+    GpStatus status;
+    GpPath *path;
+    INT count, i;
+
+    for (i = 0; i < ARRAY_SIZE(tests); i++)
+    {
+        winetest_push_context("%d", i);
+
+        status = GdipCreatePath(FillModeAlternate, &path);
+        expect(Ok, status);
+        status = GdipAddPathBezier(path, tests[i].pt[0].X, tests[i].pt[0].Y, tests[i].pt[1].X, tests[i].pt[1].Y,
+                                   tests[i].pt[2].X, tests[i].pt[2].Y, tests[i].pt[3].X, tests[i].pt[3].Y);
+        expect(Ok, status);
+        status = GdipFlattenPath(path, NULL, tests[i].flatness);
+        expect(Ok, status);
+        status = GdipGetPointCount(path, &count);
+        expect(Ok, status);
+        if (tests[i].count)
+            expect(tests[i].count, count);
+        else
+            ok(count >= 2, "got %d points\n", count);
+        GdipDeletePath(path);
+
+        winetest_pop_context();
+    }
+}
+
+static void test_flatten_translated(void)
+{
+    static const REAL offsets[] = { 1000.0, 10000.0 };
+    static const REAL flatness[] = { 1.0, 0.25 };
+    GpStatus status;
+    GpPath *path;
+    INT count, expected, i, j;
+
+    for (i = 0; i < ARRAY_SIZE(flatness); i++)
+    {
+        status = GdipCreatePath(FillModeAlternate, &path);
+        expect(Ok, status);
+        status = GdipAddPathBezier(path, 10.0, 10.0, 13.0, 50.0, 80.0, -20.0, 110.0, 10.0);
+        expect(Ok, status);
+        status = GdipFlattenPath(path, NULL, flatness[i]);
+        expect(Ok, status);
+        status = GdipGetPointCount(path, &expected);
+        expect(Ok, status);
+        GdipDeletePath(path);
+
+        for (j = 0; j < ARRAY_SIZE(offsets); j++)
+        {
+            winetest_push_context("flatness %.2f offset %.0f", flatness[i], offsets[j]);
+
+            status = GdipCreatePath(FillModeAlternate, &path);
+            expect(Ok, status);
+            status = GdipAddPathBezier(path, offsets[j] + 10.0, offsets[j] + 10.0, offsets[j] + 13.0, offsets[j] + 50.0,
+                                       offsets[j] + 80.0, offsets[j] - 20.0, offsets[j] + 110.0, offsets[j] + 10.0);
+            expect(Ok, status);
+            status = GdipFlattenPath(path, NULL, flatness[i]);
+            expect(Ok, status);
+            status = GdipGetPointCount(path, &count);
+            expect(Ok, status);
+            ok(count == expected, "got %d points, expected %d\n", count, expected);
+            GdipDeletePath(path);
+
+            winetest_pop_context();
+        }
+    }
+}
+
+static path_test_t warp_path[] = {
+    {7.53, 0.25, PathPointTypeStart, 0, 1}, /*0*/
+    {21.5, 0.25, PathPointTypeLine,  0, 1}, /*1*/
+    {20.5, 8.25, PathPointTypeLine,  0, 1}, /*2*/
+    {6.53, 8.25, PathPointTypeLine| PathPointTypeCloseSubpath, 0, 1} /*3*/
+    };
+
+static path_test_t transformed_warp_path[] = {
+    {16.56, 4.25,  PathPointTypeStart, 0, 1}, /*0*/
+    {44.56, 4.25,  PathPointTypeLine,  0, 1}, /*1*/
+    {42.56, 12.25, PathPointTypeLine,  0, 1}, /*2*/
+    {14.56, 12.25, PathPointTypeLine| PathPointTypeCloseSubpath, 0, 1} /*3*/
+    };
+
+static path_test_t warp_pie_path[] = {
+    {19.37, 8.75,  PathPointTypeStart, 0, 1}, /*0*/
+    {21.5,  8.97,  PathPointTypeLine,  0, 1}, /*1*/
+    {20.95, 10.36, PathPointTypeLine | PathPointTypeCloseSubpath, 0, 1} /*2*/
+    };
+
+static void test_warp_path(void)
+{
+    GpStatus status;
+    GpPath *path;
+    GpMatrix *mat;
+    INT count = 3;
+    GpPointF dest_points[3] = { { 8.0, 0.0 }, { 64.0, 0.0 }, { 0.0, 64.0 } };
+
+    status = GdipCreatePath(FillModeAlternate, &path);
+    expect(Ok, status);
+    status = GdipCreateMatrix(&mat);
+    expect(Ok, status);
+
+    status = GdipAddPathRectangle(path, -1.0, 0.5, 32.0, 16.0);
+    expect(Ok, status);
+
+    /* NULL path */
+    status = GdipWarpPath(NULL, NULL, dest_points, count, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    expect(InvalidParameter, status);
+
+    /* NULL destination points */
+    status = GdipWarpPath(path, NULL, NULL, count, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    expect(InvalidParameter, status);
+
+    /* Zero number of point in destination points */
+    status = GdipWarpPath(path, NULL, dest_points, 0, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    expect(InvalidParameter, status);
+
+    /* Valid warp with one destination point */
+    status = GdipWarpPath(path, NULL, dest_points, 1, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    todo_wine expect(Ok, status);
+    ok_path(path, warp_path, ARRAY_SIZE(warp_path), FALSE);
+    status = GdipResetPath(path);
+    expect(Ok, status);
+
+     /* Valid warp with two destination points */
+    status = GdipAddPathRectangle(path, -1.0, 0.5, 32.0, 16.0);
+    expect(Ok, status);
+    status = GdipWarpPath(path, NULL, dest_points, 2, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    todo_wine expect(Ok, status);
+    ok_path(path, warp_path, ARRAY_SIZE(warp_path), FALSE);
+    status = GdipResetPath(path);
+    expect(Ok, status);
+
+    /* Valid warp without transformation matrix */
+    status = GdipAddPathRectangle(path, -1.0, 0.5, 32.0, 16.0);
+    expect(Ok, status);
+    status = GdipWarpPath(path, NULL, dest_points, count, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    todo_wine expect(Ok, status);
+    ok_path(path, warp_path, ARRAY_SIZE(warp_path), FALSE);
+
+    status = GdipResetPath(path);
+    expect(Ok, status);
+
+    /* Valid warp with transformation matrix */
+    status = GdipAddPathRectangle(path, -1.0, 0.5, 32.0, 16.0);
+    expect(Ok, status);
+    status = GdipScaleMatrix(mat, 2.0, 1.0, MatrixOrderAppend);
+    expect(Ok, status);
+    status = GdipTranslateMatrix(mat, 1.5, 4.0, MatrixOrderAppend);
+    expect(Ok, status);
+
+    status = GdipWarpPath(path, mat, dest_points, count, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, FlatnessDefault);
+    todo_wine expect(Ok, status);
+    ok_path(path, transformed_warp_path, ARRAY_SIZE(transformed_warp_path), FALSE);
+
+    status = GdipResetPath(path);
+    expect(Ok, status);
+
+    /* Valid Pie Path warp with transformation matrix */
+    status = GdipAddPathPie(path, 1.0, 2.0, 5.0, 15.0, 10.0, 45.0);
+    expect(Ok, status);
+
+    status = GdipWarpPath(path, mat, dest_points, count, 0.0, 0.0, 128.0, 128.0, WarpModePerspective, 0.75f);
+    todo_wine expect(Ok, status);
+    ok_path(path, warp_pie_path, ARRAY_SIZE(warp_pie_path), TRUE);
+
+    GdipDeleteMatrix(mat);
+    GdipDeletePath(path);
+}
+
 static path_test_t widenline_path[] = {
     {5.0, 5.0,   PathPointTypeStart, 0, 0}, /*0*/
     {50.0, 5.0,  PathPointTypeLine,  0, 0}, /*1*/
@@ -1506,6 +1723,21 @@ static path_test_t widenline_unit_path[] = {
     {50.0, 9.5,  PathPointTypeLine,  0, 0}, /*1*/
     {50.0, 10.5, PathPointTypeLine,  0, 0}, /*2*/
     {5.0, 10.5,  PathPointTypeLine|PathPointTypeCloseSubpath,  0, 0} /*3*/
+    };
+
+static path_test_t widenline_rect_path[] = {
+    {0.0, 0.0,   PathPointTypeStart, 0, 0}, /*0*/
+    {55.0, 0.0,  PathPointTypeLine,  0, 0}, /*1*/
+    {55.0, 30.0, PathPointTypeLine,  0, 0}, /*2*/
+    {0.0, 30.0,  PathPointTypeLine|PathPointTypeCloseSubpath,  0, 0}, /*3*/
+    {10.0, 25.0, PathPointTypeStart, 0, 0}, /*4*/
+    {5.0, 20.0,  PathPointTypeLine,  0, 0}, /*5*/
+    {50.0, 20.0, PathPointTypeLine,  0, 0}, /*6*/
+    {45.0, 25.0, PathPointTypeLine,  0, 0}, /*7*/
+    {45.0, 5.0,  PathPointTypeLine,  0, 0}, /*8*/
+    {50.0, 10.0, PathPointTypeLine,  0, 0}, /*9*/
+    {5.0, 10.0,  PathPointTypeLine,  0, 0}, /*10*/
+    {10.0, 5.0,  PathPointTypeLine|PathPointTypeCloseSubpath,  0, 0} /*11*/
     };
 
 static void test_widen(void)
@@ -1597,6 +1829,33 @@ static void test_widen(void)
 
     status = GdipSetPenDashStyle(pen, DashStyleSolid);
     expect(Ok, status);
+
+    /* custom dash style without a dash array is a solid line */
+    GdipDeletePen(pen);
+    GdipCreatePen1(0xffffffff, 10.0, UnitPixel, &pen);
+    status = GdipSetPenDashStyle(pen, DashStyleCustom);
+    expect(Ok, status);
+    status = GdipGetPenDashCount(pen, &count);
+    expect(Ok, status);
+    expect(0, count);
+
+    status = GdipResetPath(path);
+    expect(Ok, status);
+    status = GdipAddPathLine(path, 5.0, 10.0, 50.0, 10.0);
+    expect(Ok, status);
+
+    status = GdipWidenPath(path, pen, m, 1.0);
+    expect(Ok, status);
+    ok_path(path, widenline_path, ARRAY_SIZE(widenline_path), FALSE);
+
+    status = GdipResetPath(path);
+    expect(Ok, status);
+    status = GdipAddPathRectangle(path, 5.0, 5.0, 45.0, 20.0);
+    expect(Ok, status);
+
+    status = GdipWidenPath(path, pen, m, 1.0);
+    expect(Ok, status);
+    ok_path(path, widenline_rect_path, ARRAY_SIZE(widenline_rect_path), FALSE);
 
     /* dashed line less than 1 pixel wide */
     GdipDeletePen(pen);
@@ -2364,6 +2623,9 @@ START_TEST(graphicspath)
     test_reverse();
     test_addpie();
     test_flatten();
+    test_flatten_translated();
+    test_flatten_degenerate();
+    test_warp_path();
     test_widen();
     test_widen_cap();
     test_isvisible();

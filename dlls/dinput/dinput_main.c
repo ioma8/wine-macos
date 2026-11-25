@@ -73,6 +73,7 @@ static HWND di_em_win;
 static HANDLE dinput_thread;
 static UINT input_thread_user_count;
 static struct input_thread_state *input_thread_state;
+static HANDLE stop_event;
 
 static CRITICAL_SECTION dinput_hook_crit;
 static CRITICAL_SECTION_DEBUG dinput_critsect_debug =
@@ -424,6 +425,8 @@ static DWORD WINAPI dinput_thread_proc( void *params )
     DestroyWindow( di_em_win );
     di_em_win = NULL;
 
+    if (stop_event) SetEvent( stop_event );
+
     if (this_module != NULL) FreeLibraryAndExitThread( this_module, 0 );
     return 0;
 }
@@ -454,7 +457,7 @@ void dinput_hooks_acquire_device( IDirectInputDevice8W *iface )
     list_add_tail( &acquired_device_list, &impl->entry );
     LeaveCriticalSection( &dinput_hook_crit );
 
-    SendMessageW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_REFRESH_DEVICES, 0 );
+    SendMessageTimeoutW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_REFRESH_DEVICES, 0, SMTO_BLOCK, INFINITE, NULL );
 }
 
 void dinput_hooks_unacquire_device( IDirectInputDevice8W *iface )
@@ -465,7 +468,7 @@ void dinput_hooks_unacquire_device( IDirectInputDevice8W *iface )
     list_remove( &impl->entry );
     LeaveCriticalSection( &dinput_hook_crit );
 
-    SendMessageW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_REFRESH_DEVICES, 0 );
+    SendMessageTimeoutW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_REFRESH_DEVICES, 0, SMTO_BLOCK, INFINITE, NULL );
 }
 
 void input_thread_add_user(void)
@@ -485,8 +488,11 @@ void input_thread_remove_user(void)
     {
         TRACE( "Stopping input thread.\n" );
 
-        SendMessageW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_THREAD_STOP, 0 );
-        WaitForSingleObject( dinput_thread, INFINITE );
+        if (!(stop_event = CreateEventW( NULL, FALSE, FALSE, NULL )))
+            ERR( "Failed to create stop event, error %lu\n", GetLastError() );
+        SendMessageTimeoutW( di_em_win, INPUT_THREAD_NOTIFY, NOTIFY_THREAD_STOP, 0, SMTO_BLOCK, INFINITE, NULL );
+        WaitForSingleObject( stop_event, INFINITE );
+        CloseHandle( stop_event );
         CloseHandle( dinput_thread );
         dinput_thread = NULL;
     }
@@ -522,6 +528,7 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
         break;
       case DLL_PROCESS_DETACH:
         if (reserved) break;
+        hid_joystick_cleanup_devices();
         unregister_di_em_win_class();
         break;
     }

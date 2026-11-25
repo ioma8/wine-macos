@@ -27,15 +27,7 @@
 #endif
 
 #include "config.h"
-
-#include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "macdrv.h"
-#include "winuser.h"
-#include "shellapi.h"
-#include "shlobj.h"
-#include "wine/list.h"
-#include "wine/server.h"
 
 
 WINE_DEFAULT_DEBUG_CHANNEL(clipboard);
@@ -195,7 +187,7 @@ static const CFStringRef registered_name_type_prefix = CFSTR("org.winehq.registe
 static unsigned int clipboard_thread_id;
 static HWND clipboard_hwnd;
 static BOOL is_clipboard_owner;
-static macdrv_window clipboard_cocoa_window;
+static WineWindow *clipboard_cocoa_window;
 static unsigned int last_clipboard_update;
 static unsigned int last_get_seqno;
 static WINE_CLIPFORMAT **current_mac_formats;
@@ -338,9 +330,9 @@ static WINE_CLIPFORMAT* natural_format_for_format(UINT format_id)
 
 static ATOM register_clipboard_format(const WCHAR *name)
 {
-    ATOM atom;
-    if (NtAddAtom(name, lstrlenW(name) * sizeof(WCHAR), &atom)) return 0;
-    return atom;
+    UNICODE_STRING name_str;
+    RtlInitUnicodeString(&name_str, name);
+    return NtUserRegisterWindowMessage(&name_str);
 }
 
 
@@ -579,8 +571,8 @@ static CPTABLEINFO *get_ansi_cp(void)
     static CPTABLEINFO cp;
     if (!cp.CodePage)
     {
-        if (NtCurrentTeb()->Peb->AnsiCodePageData)
-            RtlInitCodePageTable(NtCurrentTeb()->Peb->AnsiCodePageData, &cp);
+        if (RtlGetCurrentPeb()->AnsiCodePageData)
+            RtlInitCodePageTable(RtlGetCurrentPeb()->AnsiCodePageData, &cp);
         else
             RtlInitCodePageTable(utf8_hdr, &cp);
     }
@@ -1068,6 +1060,7 @@ struct format_entry *get_format_entries(CFTypeRef pasteboard, UINT *entries_size
         }
 
         free(import);
+        CFRelease(data);
     }
 
     CFRelease(types);
@@ -1424,9 +1417,9 @@ LRESULT macdrv_ClipboardWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 
 /**************************************************************************
- *              macdrv_UpdateClipboard
+ *              request_clipboard_update
  */
-void macdrv_UpdateClipboard(void)
+static void request_clipboard_update(BOOL wait)
 {
     static ULONG last_update;
     static HWND clipboard_manager;
@@ -1435,7 +1428,7 @@ void macdrv_UpdateClipboard(void)
 
     if (GetCurrentThreadId() == clipboard_thread_id) return;
 
-    TRACE("\n");
+    TRACE("%s\n", wait ? "wait" : "post");
 
     now = NtGetTickCount();
     if (last_update && (int)(now - last_update) <= CLIPBOARD_UPDATE_DELAY) return;
@@ -1451,9 +1444,24 @@ void macdrv_UpdateClipboard(void)
         }
     }
 
-    send_message_timeout(clipboard_manager, WM_USER, 0, 0,
-                         SMTO_ABORTIFHUNG, 5000, &ret);
-    last_update = now;
+    if (wait)
+    {
+        send_message_timeout(clipboard_manager, WM_USER, 0, 0,
+                             SMTO_ABORTIFHUNG, 5000, &ret);
+        last_update = now;
+        return;
+    }
+
+    NtUserPostMessage(clipboard_manager, WM_USER, 0, 0);
+}
+
+
+/**************************************************************************
+ *              macdrv_UpdateClipboard
+ */
+void macdrv_UpdateClipboard(void)
+{
+    request_clipboard_update(TRUE);
 }
 
 
@@ -1463,23 +1471,32 @@ void macdrv_UpdateClipboard(void)
 
 
 /**************************************************************************
+ *              macdrv_update_clipboard_async
+ */
+void macdrv_update_clipboard_async(void)
+{
+    request_clipboard_update(FALSE);
+}
+
+
+/**************************************************************************
  *              query_pasteboard_data
  */
-BOOL query_pasteboard_data(HWND hwnd, CFStringRef type)
+bool query_pasteboard_data(HWND hwnd, CFStringRef type)
 {
     struct get_clipboard_params params = { .data_only = TRUE, .size = 1024 };
     WINE_CLIPFORMAT *format;
-    BOOL ret = FALSE;
+    bool ret = false;
 
     TRACE("win %p/%p type %s\n", hwnd, clipboard_cocoa_window, debugstr_cf(type));
 
     format = format_for_type(type);
-    if (!format) return FALSE;
+    if (!format) return false;
 
     if (!NtUserOpenClipboard(clipboard_hwnd, 0))
     {
         ERR("failed to open clipboard for %s\n", debugstr_cf(type));
-        return FALSE;
+        return false;
     }
 
     for (;;)

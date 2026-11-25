@@ -98,8 +98,6 @@ static int has_relays( struct exports *exports )
 {
     int i;
 
-    if (target.cpu == CPU_ARM64EC) return 0;
-
     for (i = exports->base; i <= exports->limit; i++)
     {
         ORDDEF *odp = exports->ordinals[i];
@@ -220,6 +218,20 @@ static char *build_args_string( struct exports *exports )
 static void output_relay_debug( struct exports *exports )
 {
     int i;
+
+    if (is_pe())
+    {
+        output( "\t.data\n" );
+        output( "\t.balign %u\n", get_ptr_size() );
+    }
+
+    output( ".L__wine_spec_relay_descr:\n" );
+    output( "\t%s 0xdeb90002\n", get_asm_ptr_keyword() );  /* magic */
+    output( "\t%s 0\n", get_asm_ptr_keyword() );           /* relay func */
+    output( "\t%s 0\n", get_asm_ptr_keyword() );           /* private data */
+    output( "\t%s __wine_spec_relay_entry_points\n", get_asm_ptr_keyword() );
+    output( "\t%s .L__wine_spec_relay_entry_point_offsets\n", get_asm_ptr_keyword() );
+    output( "\t%s .L__wine_spec_relay_args_string\n", get_asm_ptr_keyword() );
 
     /* first the table of entry point offsets */
 
@@ -364,6 +376,7 @@ static void output_relay_debug( struct exports *exports )
         }
 
         case CPU_x86_64:
+        case CPU_ARM64EC:
             output( "\t.balign 4\n" );
             output( "\t.long 0x90909090,0x90909090\n" );
             output( "__wine_spec_relay_entry_point_%d:\n", i );
@@ -436,6 +449,7 @@ void output_exports( DLLSPEC *spec )
                     odp->name ? "" : ",NONAME",
                     odp->type == TYPE_EXTERN ? ",DATA" : "" );
         }
+        if (needs_relay) output_relay_debug( exports );
         return;
     }
 
@@ -550,35 +564,13 @@ void output_exports( DLLSPEC *spec )
 
     /* output relays */
 
-    if (needs_relay)
+    if (!is_pe())
     {
-        if (is_pe())
-        {
-            output( "\t.data\n" );
-            output( "\t.balign %u\n", get_ptr_size() );
-        }
-        else
-        {
-            output( "\t.balign %u\n", get_ptr_size() );
-            output( ".L__wine_spec_exports_end:\n" );
-        }
-
-        output( ".L__wine_spec_relay_descr:\n" );
-        output( "\t%s 0xdeb90002\n", get_asm_ptr_keyword() );  /* magic */
-        output( "\t%s 0\n", get_asm_ptr_keyword() );           /* relay func */
-        output( "\t%s 0\n", get_asm_ptr_keyword() );           /* private data */
-        output( "\t%s __wine_spec_relay_entry_points\n", get_asm_ptr_keyword() );
-        output( "\t%s .L__wine_spec_relay_entry_point_offsets\n", get_asm_ptr_keyword() );
-        output( "\t%s .L__wine_spec_relay_args_string\n", get_asm_ptr_keyword() );
-
-        output_relay_debug( exports );
+        output( "\t.balign %u\n", get_ptr_size() );
+        output( ".L__wine_spec_exports_end:\n" );
+        if (!needs_relay) output( "\t%s 0\n", get_asm_ptr_keyword() );
     }
-    else if (!is_pe())
-    {
-            output( "\t.balign %u\n", get_ptr_size() );
-            output( ".L__wine_spec_exports_end:\n" );
-            output( "\t%s 0\n", get_asm_ptr_keyword() );
-    }
+    if (needs_relay) output_relay_debug( exports );
 
     /* output import thunks */
 
@@ -625,15 +617,19 @@ void output_exports( DLLSPEC *spec )
  *
  * Output the load configuration structure.
  */
-static void output_load_config(void)
+static void output_load_config( DLLSPEC *spec )
 {
     if (!is_pe()) return;
 
     output( "\n/* load_config */\n\n" );
     output( "\t%s\n", get_asm_rodata_section() );
-    output( "\t.globl %s\n", asm_name( "_load_config_used" ));
     output( "\t.balign %u\n", get_ptr_size() );
-    output( "%s:\n", asm_name( "_load_config_used" ));
+    if (has_relays( &spec->exports ))
+    {
+        output( "\t.long 0xdeb90002\n" );             /* magic */
+        output_rva( ".L__wine_spec_relay_descr" );
+    }
+    output( "%s\n", asm_globl( "_load_config_used" ));
     output( "\t.long %u\n", get_ptr_size() == 8 ? 0x140 : 0xc0 ); /* Size */
     output( "\t.long 0\n" );                          /* TimeDateStamp */
     output( "\t.short 0\n" );                         /* MajorVersion */
@@ -700,6 +696,93 @@ static void output_load_config(void)
     output( "\t%s 0\n", get_asm_ptr_keyword() );      /* GuardXFGTableDispatchFunctionPointer */
     output( "\t%s 0\n", get_asm_ptr_keyword() );      /* CastGuardOsDeterminedFailureMode */
     output( "\t%s 0\n", get_asm_ptr_keyword() );      /* GuardMemcpyFunctionPointer */
+
+    if (target.cpu != CPU_ARM64EC) return;
+
+    output( "%s\n", asm_globl( "__chpe_metadata" ));
+    output( "\t.long 2\n" );                                       /* Version */
+    output( "\t.rva __hybrid_code_map\n" );                        /* CodeMap */
+    output( "\t.long __hybrid_code_map_count\n" );                 /* CodeMapCount */
+    output( "\t.rva __x64_code_ranges_to_entry_points\n" );        /* CodeRangesToEntryPoints */
+    output( "\t.rva __arm64x_redirection_metadata\n" );            /* RedirectionMetadata */
+    output( "\t.rva __os_arm64x_dispatch_call_no_redirect\n" );    /* __os_arm64x_dispatch_call_no_redirect */
+    output( "\t.rva __os_arm64x_dispatch_ret\n" );                 /* __os_arm64x_dispatch_ret */
+    output( "\t.rva __os_arm64x_check_call\n" );                   /* __os_arm64x_dispatch_call */
+    output( "\t.rva __os_arm64x_check_icall\n" );                  /* __os_arm64x_dispatch_icall */
+    output( "\t.rva __os_arm64x_check_icall_cfg\n" );              /* __os_arm64x_dispatch_icall_cfg */
+    output( "\t.rva __arm64x_native_entrypoint\n" );               /* AlternateEntryPoint */
+    output( "\t.rva __hybrid_auxiliary_iat\n" );                   /* AuxiliaryIAT */
+    output( "\t.long __x64_code_ranges_to_entry_points_count\n" ); /* CodeRangesToEntryPointsCount */
+    output( "\t.long __arm64x_redirection_metadata_count\n" );     /* RedirectionMetadataCount */
+    output( "\t.rva __os_arm64x_get_x64_information\n" );          /* GetX64InformationFunctionPointer */
+    output( "\t.rva __os_arm64x_set_x64_information\n" );          /* SetX64InformationFunctionPointer */
+    output( "\t.rva __arm64x_extra_rfe_table\n" );                 /* ExtraRFETable */
+    output( "\t.long __arm64x_extra_rfe_table_size\n" );           /* ExtraRFETableSize */
+    output( "\t.rva __os_arm64x_dispatch_fptr\n" );                /* __os_arm64x_dispatch_fptr */
+    output( "\t.rva __hybrid_auxiliary_iat_copy\n" );              /* AuxiliaryIATCopy */
+    output( "\t.rva __hybrid_auxiliary_delayload_iat\n" );         /* __os_arm64x_helper0 */
+    output( "\t.rva __hybrid_auxiliary_delayload_iat_copy\n" );    /* __os_arm64x_helper1 */
+    output( "\t.long __hybrid_image_info_bitfield\n" );            /* __os_arm64x_helper2 */
+    output( "\t.rva __os_arm64x_helper3\n" );                      /* __os_arm64x_helper3 */
+    output( "\t.rva __os_arm64x_helper4\n" );                      /* __os_arm64x_helper4 */
+    output( "\t.rva __os_arm64x_helper5\n" );                      /* __os_arm64x_helper5 */
+    output( "\t.rva __os_arm64x_helper6\n" );                      /* __os_arm64x_helper6 */
+    output( "\t.rva __os_arm64x_helper7\n" );                      /* __os_arm64x_helper7 */
+    output( "\t.rva __os_arm64x_helper8\n" );                      /* __os_arm64x_helper8 */
+
+    output( "\t.section .data\n" );
+    output( "\t.balign %u\n", get_ptr_size() );
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_check_icall_cfg" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_dispatch_call_no_redirect" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_dispatch_fptr" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_dispatch_ret" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_get_x64_information" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_set_x64_information" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper3" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper4" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper5" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper6" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper7" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__os_arm64x_helper8" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__guard_check_icall_fptr" ));
+    output( "%s\n\t.quad 0\n", asm_globl( "__guard_dispatch_icall_fptr" ));
+    output( "%s\n", asm_globl( "__os_arm64x_dispatch_icall" ));
+    output( "%s\n", asm_globl( "__os_arm64x_check_icall" ));
+    output( "\t.quad 0\n" );
+    output( "%s\n", asm_globl( "__os_arm64x_dispatch_call" ));
+    output( "%s\n", asm_globl( "__os_arm64x_check_call" ));
+    output( "\t.quad 0\n" );
+}
+
+
+/*******************************************************************
+ *         output_crt_sections
+ *
+ * Generate the start/end symbols for .CRT$X?? sections. The start symbol is put into
+ * .CRT$X?A, the end .CRT$X?Z. Since the linker sort .CRT$X?? sections by name, these symbols
+ * will end up at the right location.
+ */
+void output_crt_sections(void)
+{
+    static const char sections[] = "ict";
+    int i;
+
+    for (i = 0; sections[i]; i++)
+    {
+        char *symbol_name = strmake( "__x%c_a", sections[i] );
+        output( "\t.section .CRT$X%cA\n", toupper( sections[i] ) );
+        output( "\t.globl %s\n", asm_name( symbol_name ) );
+        output( "\t.balign %u\n", get_ptr_size() );
+        output( "%s:\n", asm_name( symbol_name ) );
+        output( "\t%s 0\n", get_asm_ptr_keyword() );
+
+        symbol_name = strmake( "__x%c_z", sections[i] );
+        output( "\t.section .CRT$X%cZ\n", toupper( sections[i] ) );
+        output( "\t.globl %s\n", asm_name( symbol_name ) );
+        output( "\t.balign %u\n", get_ptr_size() );
+        output( "%s:\n", asm_name( symbol_name ) );
+        output( "\t%s 0\n", get_asm_ptr_keyword() );
+    }
 }
 
 
@@ -720,6 +803,7 @@ void output_module( DLLSPEC *spec )
     {
     case PLATFORM_MINGW:
     case PLATFORM_WINDOWS:
+    case PLATFORM_WINDOWS_GNU:
         return;  /* nothing to do */
     case PLATFORM_APPLE:
         output( "\t.text\n" );
@@ -813,7 +897,7 @@ void output_module( DLLSPEC *spec )
         data_dirs[0] = ".L__wine_spec_exports";   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT] */
     if (has_imports())
         data_dirs[1] = ".L__wine_spec_imports";   /* DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] */
-    if (spec->nb_resources)
+    if (spec->resources.count)
         data_dirs[2] = ".L__wine_spec_resources"; /* DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE] */
     if (has_delay_imports())
         data_dirs[13] = ".L__wine_spec_delay_imports"; /* DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT] */
@@ -840,7 +924,8 @@ void output_spec32_file( DLLSPEC *spec )
     output_exports( spec );
     output_imports( spec );
     if (needs_get_pc_thunk) output_get_pc_thunk();
-    output_load_config();
+    output_load_config( spec );
+    output_crt_sections();
     output_resources( spec );
     output_gnu_stack_note();
     close_output_file();
@@ -855,7 +940,6 @@ struct sec_data
     unsigned int flags;
     unsigned int file_size;
     unsigned int virt_size;
-    unsigned int filepos;
     unsigned int rva;
 };
 
@@ -901,10 +985,9 @@ static unsigned int current_rva(void)
     return pe.sec[pe.sec_count - 1].rva + pe.sec[pe.sec_count - 1].virt_size;
 }
 
-static unsigned int current_filepos(void)
+static unsigned int align_pos( unsigned int pos, unsigned int align )
 {
-    if (!pe.sec_count) return max( 0x400, pe.file_align );
-    return pe.sec[pe.sec_count - 1].filepos + pe.sec[pe.sec_count - 1].file_size;
+    return (pos + align - 1) & ~(align - 1);
 }
 
 static unsigned int flush_output_to_section( const char *name, int dir_idx, unsigned int flags )
@@ -919,9 +1002,8 @@ static unsigned int flush_output_to_section( const char *name, int dir_idx, unsi
     sec->size      = output_buffer_pos;
     sec->flags     = flags;
     sec->rva       = current_rva();
-    sec->filepos   = current_filepos();
-    sec->file_size = (sec->size + pe.file_align - 1) & ~(pe.file_align - 1);
-    sec->virt_size = (sec->size + pe.section_align - 1) & ~(pe.section_align - 1);
+    sec->file_size = align_pos( sec->size, pe.file_align );
+    sec->virt_size = align_pos( sec->size, pe.section_align );
     if (dir_idx >= 0) set_dir( dir_idx, sec->rva, sec->size );
     init_output_buffer();
     pe.sec_count++;
@@ -1018,33 +1100,32 @@ static int apiset_hash_cmp( const void *h1, const void *h2 )
 static void output_apiset_section( const struct apiset *apiset )
 {
     struct apiset_hash_entry *hash;
-    struct apiset_entry *e;
-    unsigned int i, j, str_pos, value_pos, hash_pos, size;
+    unsigned int i, j, str_pos, value_pos, hash_pos, size, count = apiset->entries.count;
 
     init_output_buffer();
 
-    value_pos = 0x1c /* header */ + apiset->count * 0x18; /* names */
+    value_pos = 0x1c /* header */ + count * 0x18; /* names */
     str_pos = value_pos;
-    for (i = 0, e = apiset->entries; i < apiset->count; i++, e++)
+    ARRAY_FOR_EACH( e, &apiset->entries, struct apiset_entry )
         str_pos += 0x14 * max( 1, e->val_count );  /* values */
 
     hash_pos = str_pos + ((apiset->str_pos * 2 + 3) & ~3);
-    size = hash_pos + apiset->count * 8;  /* hashes */
+    size = hash_pos + count * 8;  /* hashes */
 
     /* header */
 
     put_dword( 6 );      /* Version */
     put_dword( size );   /* Size */
     put_dword( 0 );      /* Flags */
-    put_dword( apiset->count );  /* Count */
+    put_dword( count );  /* Count */
     put_dword( 0x1c );   /* EntryOffset */
     put_dword( hash_pos ); /* HashOffset */
     put_dword( apiset_hash_factor );   /* HashFactor */
 
     /* name entries */
 
-    value_pos = 0x1c /* header */ + apiset->count * 0x18; /* names */
-    for (i = 0, e = apiset->entries; i < apiset->count; i++, e++)
+    value_pos = 0x1c /* header */ + count * 0x18; /* names */
+    ARRAY_FOR_EACH( e, &apiset->entries, struct apiset_entry )
     {
         put_dword( 1 );  /* Flags */
         put_dword( str_pos + e->name_off * 2 );  /* NameOffset */
@@ -1057,7 +1138,7 @@ static void output_apiset_section( const struct apiset *apiset )
 
     /* values */
 
-    for (i = 0, e = apiset->entries; i < apiset->count; i++, e++)
+    ARRAY_FOR_EACH( e, &apiset->entries, struct apiset_entry )
     {
         if (!e->val_count)
         {
@@ -1092,14 +1173,16 @@ static void output_apiset_section( const struct apiset *apiset )
 
     /* hash table */
 
-    hash = xmalloc( apiset->count * sizeof(*hash) );
-    for (i = 0, e = apiset->entries; i < apiset->count; i++, e++)
+    hash = xmalloc( count * sizeof(*hash) );
+    i = 0;
+    ARRAY_FOR_EACH( e, &apiset->entries, struct apiset_entry )
     {
         hash[i].hash = e->hash;
         hash[i].index = i;
+        i++;
     }
-    qsort( hash, apiset->count, sizeof(*hash), apiset_hash_cmp );
-    for (i = 0; i < apiset->count; i++)
+    qsort( hash, count, sizeof(*hash), apiset_hash_cmp );
+    for (i = 0; i < count; i++)
     {
         put_dword( hash[i].hash );
         put_dword( hash[i].index );
@@ -1113,7 +1196,7 @@ static void output_apiset_section( const struct apiset *apiset )
 static void output_pe_file( DLLSPEC *spec, const char signature[32] )
 {
     const unsigned int lfanew = 0x40 + 32;
-    unsigned int i, code_size = 0, data_size = 0;
+    unsigned int i, filepos, code_size = 0, data_size = 0;
 
     init_output_buffer();
 
@@ -1235,18 +1318,20 @@ static void output_pe_file( DLLSPEC *spec, const char signature[32] )
     }
 
     /* sections */
+    filepos = align_pos( output_buffer_pos + pe.sec_count * 40, pe.file_align );
     for (i = 0; i < pe.sec_count; i++)
     {
         put_data( pe.sec[i].name, 8 );    /* Name */
         put_dword( pe.sec[i].size );      /* VirtualSize */
         put_dword( pe.sec[i].rva );       /* VirtualAddress */
         put_dword( pe.sec[i].file_size ); /* SizeOfRawData */
-        put_dword( pe.sec[i].filepos );   /* PointerToRawData */
+        put_dword( filepos );             /* PointerToRawData */
         put_dword( 0 );                   /* PointerToRelocations */
         put_dword( 0 );                   /* PointerToLinenumbers */
         put_word( 0 );                    /* NumberOfRelocations */
         put_word( 0 );                    /* NumberOfLinenumbers */
         put_dword( pe.sec[i].flags );     /* Characteristics  */
+        filepos += pe.sec[i].file_size;
     }
     align_output( pe.file_align );
 
@@ -1347,7 +1432,7 @@ void output_data_module( DLLSPEC *spec )
     pe.section_align = pe.file_align = get_section_alignment();
 
     output_pe_exports( spec );
-    if (spec->apiset.count) output_apiset_section( &spec->apiset );
+    if (spec->apiset.entries.count) output_apiset_section( &spec->apiset );
     output_pe_file( spec, builtin_signature );
 }
 
@@ -1427,7 +1512,6 @@ void output_def_file( DLLSPEC *spec, struct exports *exports, int import_only )
         output( "\n" );
     }
     if (!total) warning( "%s: Import library doesn't export anything\n", spec->file_name );
-    if (spec32) free_dll_spec( spec32 );
 }
 
 

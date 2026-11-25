@@ -503,10 +503,10 @@ static HRESULT WINAPI transform_ProcessMessage(IMFTransform *iface, MFT_MESSAGE_
     switch (message)
     {
         case MFT_MESSAGE_COMMAND_DRAIN:
-            return wg_transform_drain(encoder->wg_transform);
+            return encoder->wg_transform ? wg_transform_drain(encoder->wg_transform) : MF_E_TRANSFORM_TYPE_NOT_SET;
 
         case MFT_MESSAGE_COMMAND_FLUSH:
-            return wg_transform_flush(encoder->wg_transform);
+            return encoder->wg_transform ? wg_transform_flush(encoder->wg_transform) : MF_E_TRANSFORM_TYPE_NOT_SET;
 
         default:
             FIXME("Ignoring message %#x.\n", message);
@@ -541,7 +541,7 @@ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags, 
     if (!samples->pSample)
         return E_INVALIDARG;
 
-    if (SUCCEEDED(hr = wg_transform_read_mf(encoder->wg_transform, samples->pSample, &samples->dwStatus, NULL)))
+    if (SUCCEEDED(hr = wg_transform_read_mf(encoder->wg_transform, samples->pSample, 0, &samples->dwStatus, NULL)))
         wg_sample_queue_flush(encoder->wg_sample_queue, false);
 
     return hr;

@@ -374,7 +374,7 @@
     SYSCALL_ENTRY( 0x1172, NtGdiDdDDISharedPrimaryLockNotification, 0 ) \
     SYSCALL_ENTRY( 0x1173, NtGdiDdDDISharedPrimaryUnLockNotification, 0 ) \
     SYSCALL_ENTRY( 0x1174, NtGdiDdDDISignalSynchronizationObject, 0 ) \
-    SYSCALL_ENTRY( 0x1175, NtGdiDdDDISignalSynchronizationObjectFromCpu, 0 ) \
+    SYSCALL_ENTRY( 0x1175, NtGdiDdDDISignalSynchronizationObjectFromCpu, 4 ) \
     SYSCALL_ENTRY( 0x1176, NtGdiDdDDISignalSynchronizationObjectFromGpu, 0 ) \
     SYSCALL_ENTRY( 0x1177, NtGdiDdDDISignalSynchronizationObjectFromGpu2, 0 ) \
     SYSCALL_ENTRY( 0x1178, NtGdiDdDDISubmitCommand, 0 ) \
@@ -390,7 +390,7 @@
     SYSCALL_ENTRY( 0x1182, NtGdiDdDDIUpdateOverlay, 0 ) \
     SYSCALL_ENTRY( 0x1183, NtGdiDdDDIWaitForIdle, 0 ) \
     SYSCALL_ENTRY( 0x1184, NtGdiDdDDIWaitForSynchronizationObject, 0 ) \
-    SYSCALL_ENTRY( 0x1185, NtGdiDdDDIWaitForSynchronizationObjectFromCpu, 0 ) \
+    SYSCALL_ENTRY( 0x1185, NtGdiDdDDIWaitForSynchronizationObjectFromCpu, 4 ) \
     SYSCALL_ENTRY( 0x1186, NtGdiDdDDIWaitForSynchronizationObjectFromGpu, 0 ) \
     SYSCALL_ENTRY( 0x1187, NtGdiDdDDIWaitForVerticalBlankEvent, 0 ) \
     SYSCALL_ENTRY( 0x1188, NtGdiDdDDIWaitForVerticalBlankEvent2, 0 ) \
@@ -1068,13 +1068,13 @@
     SYSCALL_ENTRY( 0x1428, NtUserGetPointerDeviceInputSpace, 0 ) \
     SYSCALL_ENTRY( 0x1429, NtUserGetPointerDeviceOrientation, 0 ) \
     SYSCALL_ENTRY( 0x142a, NtUserGetPointerDeviceProperties, 0 ) \
-    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 0 ) \
+    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 12 ) \
     SYSCALL_ENTRY( 0x142c, NtUserGetPointerDevices, 0 ) \
     SYSCALL_ENTRY( 0x142d, NtUserGetPointerFrameTimes, 0 ) \
     SYSCALL_ENTRY( 0x142e, NtUserGetPointerInfoList, 32 ) \
     SYSCALL_ENTRY( 0x142f, NtUserGetPointerInputTransform, 0 ) \
     SYSCALL_ENTRY( 0x1430, NtUserGetPointerProprietaryId, 0 ) \
-    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 0 ) \
+    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 8 ) \
     SYSCALL_ENTRY( 0x1432, NtUserGetPrecisionTouchPadConfiguration, 0 ) \
     SYSCALL_ENTRY( 0x1433, NtUserGetPriorityClipboardFormat, 8 ) \
     SYSCALL_ENTRY( 0x1434, NtUserGetProcessDefaultLayout, 4 ) \
@@ -1152,7 +1152,7 @@
     SYSCALL_ENTRY( 0x147c, NtUserInitializeInputDeviceInjection, 0 ) \
     SYSCALL_ENTRY( 0x147d, NtUserInitializePointerDeviceInjection, 0 ) \
     SYSCALL_ENTRY( 0x147e, NtUserInitializePointerDeviceInjectionEx, 0 ) \
-    SYSCALL_ENTRY( 0x147f, NtUserInitializeTouchInjection, 0 ) \
+    SYSCALL_ENTRY( 0x147f, NtUserInitializeTouchInjection, 8 ) \
     SYSCALL_ENTRY( 0x1480, NtUserInjectDeviceInput, 0 ) \
     SYSCALL_ENTRY( 0x1481, NtUserInjectGenericHidInput, 0 ) \
     SYSCALL_ENTRY( 0x1482, NtUserInjectGesture, 0 ) \
@@ -1209,7 +1209,7 @@
     SYSCALL_ENTRY( 0x14b5, NtUserMessageCall, 28 ) \
     SYSCALL_ENTRY( 0x14b6, NtUserMinInitialize, 0 ) \
     SYSCALL_ENTRY( 0x14b7, NtUserMinMaximize, 0 ) \
-    SYSCALL_ENTRY( 0x14b8, NtUserModifyUserStartupInfoFlags, 0 ) \
+    SYSCALL_ENTRY( 0x14b8, NtUserModifyUserStartupInfoFlags, 8 ) \
     SYSCALL_ENTRY( 0x14b9, NtUserModifyWindowTouchCapability, 0 ) \
     SYSCALL_ENTRY( 0x14ba, NtUserMoveWindow, 24 ) \
     SYSCALL_ENTRY( 0x14bb, NtUserMsgWaitForMultipleObjectsEx, 20 ) \
@@ -1390,7 +1390,7 @@
     SYSCALL_ENTRY( 0x156a, NtUserSetMenuContextHelpId, 8 ) \
     SYSCALL_ENTRY( 0x156b, NtUserSetMenuDefaultItem, 12 ) \
     SYSCALL_ENTRY( 0x156c, NtUserSetMenuFlagRtoL, 0 ) \
-    SYSCALL_ENTRY( 0x156d, NtUserSetMessageExtraInfo, 0 ) \
+    SYSCALL_ENTRY( 0x156d, NtUserSetMessageExtraInfo, 4 ) \
     SYSCALL_ENTRY( 0x156e, NtUserSetMirrorRendering, 0 ) \
     SYSCALL_ENTRY( 0x156f, NtUserSetModernAppWindow, 0 ) \
     SYSCALL_ENTRY( 0x1570, NtUserSetMonitorWorkArea, 0 ) \
@@ -1441,7 +1441,7 @@
     SYSCALL_ENTRY( 0x159d, NtUserSetWindowCompositionTransition, 0 ) \
     SYSCALL_ENTRY( 0x159e, NtUserSetWindowContextHelpId, 8 ) \
     SYSCALL_ENTRY( 0x159f, NtUserSetWindowDisplayAffinity, 0 ) \
-    SYSCALL_ENTRY( 0x15a0, NtUserSetWindowFNID, 0 ) \
+    SYSCALL_ENTRY( 0x15a0, NtUserSetWindowFNID, 8 ) \
     SYSCALL_ENTRY( 0x15a1, NtUserSetWindowFeedbackSetting, 0 ) \
     SYSCALL_ENTRY( 0x15a2, NtUserSetWindowGroup, 0 ) \
     SYSCALL_ENTRY( 0x15a3, NtUserSetWindowLong, 16 ) \
@@ -1916,7 +1916,7 @@
     SYSCALL_ENTRY( 0x1172, NtGdiDdDDISharedPrimaryLockNotification, 0 ) \
     SYSCALL_ENTRY( 0x1173, NtGdiDdDDISharedPrimaryUnLockNotification, 0 ) \
     SYSCALL_ENTRY( 0x1174, NtGdiDdDDISignalSynchronizationObject, 0 ) \
-    SYSCALL_ENTRY( 0x1175, NtGdiDdDDISignalSynchronizationObjectFromCpu, 0 ) \
+    SYSCALL_ENTRY( 0x1175, NtGdiDdDDISignalSynchronizationObjectFromCpu, 8 ) \
     SYSCALL_ENTRY( 0x1176, NtGdiDdDDISignalSynchronizationObjectFromGpu, 0 ) \
     SYSCALL_ENTRY( 0x1177, NtGdiDdDDISignalSynchronizationObjectFromGpu2, 0 ) \
     SYSCALL_ENTRY( 0x1178, NtGdiDdDDISubmitCommand, 0 ) \
@@ -1932,7 +1932,7 @@
     SYSCALL_ENTRY( 0x1182, NtGdiDdDDIUpdateOverlay, 0 ) \
     SYSCALL_ENTRY( 0x1183, NtGdiDdDDIWaitForIdle, 0 ) \
     SYSCALL_ENTRY( 0x1184, NtGdiDdDDIWaitForSynchronizationObject, 0 ) \
-    SYSCALL_ENTRY( 0x1185, NtGdiDdDDIWaitForSynchronizationObjectFromCpu, 0 ) \
+    SYSCALL_ENTRY( 0x1185, NtGdiDdDDIWaitForSynchronizationObjectFromCpu, 8 ) \
     SYSCALL_ENTRY( 0x1186, NtGdiDdDDIWaitForSynchronizationObjectFromGpu, 0 ) \
     SYSCALL_ENTRY( 0x1187, NtGdiDdDDIWaitForVerticalBlankEvent, 0 ) \
     SYSCALL_ENTRY( 0x1188, NtGdiDdDDIWaitForVerticalBlankEvent2, 0 ) \
@@ -2610,13 +2610,13 @@
     SYSCALL_ENTRY( 0x1428, NtUserGetPointerDeviceInputSpace, 0 ) \
     SYSCALL_ENTRY( 0x1429, NtUserGetPointerDeviceOrientation, 0 ) \
     SYSCALL_ENTRY( 0x142a, NtUserGetPointerDeviceProperties, 0 ) \
-    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 0 ) \
+    SYSCALL_ENTRY( 0x142b, NtUserGetPointerDeviceRects, 24 ) \
     SYSCALL_ENTRY( 0x142c, NtUserGetPointerDevices, 0 ) \
     SYSCALL_ENTRY( 0x142d, NtUserGetPointerFrameTimes, 0 ) \
     SYSCALL_ENTRY( 0x142e, NtUserGetPointerInfoList, 64 ) \
     SYSCALL_ENTRY( 0x142f, NtUserGetPointerInputTransform, 0 ) \
     SYSCALL_ENTRY( 0x1430, NtUserGetPointerProprietaryId, 0 ) \
-    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 0 ) \
+    SYSCALL_ENTRY( 0x1431, NtUserGetPointerType, 16 ) \
     SYSCALL_ENTRY( 0x1432, NtUserGetPrecisionTouchPadConfiguration, 0 ) \
     SYSCALL_ENTRY( 0x1433, NtUserGetPriorityClipboardFormat, 16 ) \
     SYSCALL_ENTRY( 0x1434, NtUserGetProcessDefaultLayout, 8 ) \
@@ -2694,7 +2694,7 @@
     SYSCALL_ENTRY( 0x147c, NtUserInitializeInputDeviceInjection, 0 ) \
     SYSCALL_ENTRY( 0x147d, NtUserInitializePointerDeviceInjection, 0 ) \
     SYSCALL_ENTRY( 0x147e, NtUserInitializePointerDeviceInjectionEx, 0 ) \
-    SYSCALL_ENTRY( 0x147f, NtUserInitializeTouchInjection, 0 ) \
+    SYSCALL_ENTRY( 0x147f, NtUserInitializeTouchInjection, 16 ) \
     SYSCALL_ENTRY( 0x1480, NtUserInjectDeviceInput, 0 ) \
     SYSCALL_ENTRY( 0x1481, NtUserInjectGenericHidInput, 0 ) \
     SYSCALL_ENTRY( 0x1482, NtUserInjectGesture, 0 ) \
@@ -2751,7 +2751,7 @@
     SYSCALL_ENTRY( 0x14b5, NtUserMessageCall, 56 ) \
     SYSCALL_ENTRY( 0x14b6, NtUserMinInitialize, 0 ) \
     SYSCALL_ENTRY( 0x14b7, NtUserMinMaximize, 0 ) \
-    SYSCALL_ENTRY( 0x14b8, NtUserModifyUserStartupInfoFlags, 0 ) \
+    SYSCALL_ENTRY( 0x14b8, NtUserModifyUserStartupInfoFlags, 16 ) \
     SYSCALL_ENTRY( 0x14b9, NtUserModifyWindowTouchCapability, 0 ) \
     SYSCALL_ENTRY( 0x14ba, NtUserMoveWindow, 48 ) \
     SYSCALL_ENTRY( 0x14bb, NtUserMsgWaitForMultipleObjectsEx, 40 ) \
@@ -2932,7 +2932,7 @@
     SYSCALL_ENTRY( 0x156a, NtUserSetMenuContextHelpId, 16 ) \
     SYSCALL_ENTRY( 0x156b, NtUserSetMenuDefaultItem, 24 ) \
     SYSCALL_ENTRY( 0x156c, NtUserSetMenuFlagRtoL, 0 ) \
-    SYSCALL_ENTRY( 0x156d, NtUserSetMessageExtraInfo, 0 ) \
+    SYSCALL_ENTRY( 0x156d, NtUserSetMessageExtraInfo, 8 ) \
     SYSCALL_ENTRY( 0x156e, NtUserSetMirrorRendering, 0 ) \
     SYSCALL_ENTRY( 0x156f, NtUserSetModernAppWindow, 0 ) \
     SYSCALL_ENTRY( 0x1570, NtUserSetMonitorWorkArea, 0 ) \
@@ -2983,7 +2983,7 @@
     SYSCALL_ENTRY( 0x159d, NtUserSetWindowCompositionTransition, 0 ) \
     SYSCALL_ENTRY( 0x159e, NtUserSetWindowContextHelpId, 16 ) \
     SYSCALL_ENTRY( 0x159f, NtUserSetWindowDisplayAffinity, 0 ) \
-    SYSCALL_ENTRY( 0x15a0, NtUserSetWindowFNID, 0 ) \
+    SYSCALL_ENTRY( 0x15a0, NtUserSetWindowFNID, 16 ) \
     SYSCALL_ENTRY( 0x15a1, NtUserSetWindowFeedbackSetting, 0 ) \
     SYSCALL_ENTRY( 0x15a2, NtUserSetWindowGroup, 0 ) \
     SYSCALL_ENTRY( 0x15a3, NtUserSetWindowLong, 32 ) \
@@ -3384,7 +3384,6 @@
     SYSCALL_STUB( NtGdiDdDDISharedPrimaryLockNotification ) \
     SYSCALL_STUB( NtGdiDdDDISharedPrimaryUnLockNotification ) \
     SYSCALL_STUB( NtGdiDdDDISignalSynchronizationObject ) \
-    SYSCALL_STUB( NtGdiDdDDISignalSynchronizationObjectFromCpu ) \
     SYSCALL_STUB( NtGdiDdDDISignalSynchronizationObjectFromGpu ) \
     SYSCALL_STUB( NtGdiDdDDISignalSynchronizationObjectFromGpu2 ) \
     SYSCALL_STUB( NtGdiDdDDISubmitCommand ) \
@@ -3400,7 +3399,6 @@
     SYSCALL_STUB( NtGdiDdDDIUpdateOverlay ) \
     SYSCALL_STUB( NtGdiDdDDIWaitForIdle ) \
     SYSCALL_STUB( NtGdiDdDDIWaitForSynchronizationObject ) \
-    SYSCALL_STUB( NtGdiDdDDIWaitForSynchronizationObjectFromCpu ) \
     SYSCALL_STUB( NtGdiDdDDIWaitForSynchronizationObjectFromGpu ) \
     SYSCALL_STUB( NtGdiDdDDIWaitForVerticalBlankEvent ) \
     SYSCALL_STUB( NtGdiDdDDIWaitForVerticalBlankEvent2 ) \
@@ -3822,7 +3820,6 @@
     SYSCALL_STUB( NtUserGetKeyboardType ) \
     SYSCALL_STUB( NtUserGetListBoxInfo ) \
     SYSCALL_STUB( NtUserGetMenuIndex ) \
-    SYSCALL_STUB( NtUserGetMessagePos ) \
     SYSCALL_STUB( NtUserGetMinuserIdForBaseWindow ) \
     SYSCALL_STUB( NtUserGetModernAppWindow ) \
     SYSCALL_STUB( NtUserGetOemBitmapSize ) \
@@ -3834,12 +3831,10 @@
     SYSCALL_STUB( NtUserGetPointerDeviceInputSpace ) \
     SYSCALL_STUB( NtUserGetPointerDeviceOrientation ) \
     SYSCALL_STUB( NtUserGetPointerDeviceProperties ) \
-    SYSCALL_STUB( NtUserGetPointerDeviceRects ) \
     SYSCALL_STUB( NtUserGetPointerDevices ) \
     SYSCALL_STUB( NtUserGetPointerFrameTimes ) \
     SYSCALL_STUB( NtUserGetPointerInputTransform ) \
     SYSCALL_STUB( NtUserGetPointerProprietaryId ) \
-    SYSCALL_STUB( NtUserGetPointerType ) \
     SYSCALL_STUB( NtUserGetPrecisionTouchPadConfiguration ) \
     SYSCALL_STUB( NtUserGetProcessUIContextInformation ) \
     SYSCALL_STUB( NtUserGetProp2 ) \
@@ -3889,7 +3884,6 @@
     SYSCALL_STUB( NtUserInitializeInputDeviceInjection ) \
     SYSCALL_STUB( NtUserInitializePointerDeviceInjection ) \
     SYSCALL_STUB( NtUserInitializePointerDeviceInjectionEx ) \
-    SYSCALL_STUB( NtUserInitializeTouchInjection ) \
     SYSCALL_STUB( NtUserInjectDeviceInput ) \
     SYSCALL_STUB( NtUserInjectGenericHidInput ) \
     SYSCALL_STUB( NtUserInjectGesture ) \
@@ -3931,7 +3925,6 @@
     SYSCALL_STUB( NtUserMarkWindowForRawMouse ) \
     SYSCALL_STUB( NtUserMinInitialize ) \
     SYSCALL_STUB( NtUserMinMaximize ) \
-    SYSCALL_STUB( NtUserModifyUserStartupInfoFlags ) \
     SYSCALL_STUB( NtUserModifyWindowTouchCapability ) \
     SYSCALL_STUB( NtUserNavigateFocus ) \
     SYSCALL_STUB( NtUserNlsKbdSendIMENotification ) \
@@ -4055,7 +4048,6 @@
     SYSCALL_STUB( NtUserSetMagnificationDesktopMagnifierOffsetsDWMUpdated ) \
     SYSCALL_STUB( NtUserSetManipulationInputTarget ) \
     SYSCALL_STUB( NtUserSetMenuFlagRtoL ) \
-    SYSCALL_STUB( NtUserSetMessageExtraInfo ) \
     SYSCALL_STUB( NtUserSetMirrorRendering ) \
     SYSCALL_STUB( NtUserSetModernAppWindow ) \
     SYSCALL_STUB( NtUserSetMonitorWorkArea ) \
@@ -4089,7 +4081,6 @@
     SYSCALL_STUB( NtUserSetWindowCompositionAttribute ) \
     SYSCALL_STUB( NtUserSetWindowCompositionTransition ) \
     SYSCALL_STUB( NtUserSetWindowDisplayAffinity ) \
-    SYSCALL_STUB( NtUserSetWindowFNID ) \
     SYSCALL_STUB( NtUserSetWindowFeedbackSetting ) \
     SYSCALL_STUB( NtUserSetWindowGroup ) \
     SYSCALL_STUB( NtUserSetWindowMessageCapability ) \

@@ -244,6 +244,7 @@ dispex_static_data_t NodeList_dispex = {
     .vtbl       = &HTMLDOMChildrenCollection_dispex_vtbl,
     .disp_tid   = DispDOMChildrenCollection_tid,
     .iface_tids = NodeList_iface_tids,
+    .js_flags   = HOSTOBJ_VOLATILE_PROPS
 };
 
 HRESULT create_child_collection(nsIDOMNodeList *nslist, DispatchEx *owner, IHTMLDOMChildrenCollection **ret)
@@ -1142,7 +1143,10 @@ void HTMLDOMNode_unlink(DispatchEx *dispex)
     HTMLDOMNode *This = HTMLDOMNode_from_DispatchEx(dispex);
 
     release_event_target(&This->event_target);
-    unlink_ref(&This->nsnode);
+    if(This->nsnode) {
+        nsIDOMNode_SetMshtmlNode(This->nsnode, NULL);
+        unlink_ref(&This->nsnode);
+    }
 
     if(This->doc) {
         HTMLDocumentNode *doc = This->doc;
@@ -1293,6 +1297,7 @@ static HRESULT create_node(HTMLDocumentNode *doc, nsIDOMNode *nsnode, HTMLDOMNod
         nsres = nsIDOMNode_QueryInterface(nsnode, &IID_nsIDOMAttr, (void **)&nsattr);
         assert(nsres == NS_OK);
         hres = create_attr_node(doc, nsattr, &attr);
+        nsIDOMAttr_Release(nsattr);
         if(SUCCEEDED(hres))
             *ret = &attr->node;
         return hres;

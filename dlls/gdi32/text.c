@@ -439,7 +439,7 @@ static BOOL BIDI_Reorder( HDC hDC,               /* [in] Display DC */
                 for (i = 0; i < uCount; i++)
                     lpOrder[i] = i;
             }
-            return TRUE;
+            return FALSE;
         }
     }
 
@@ -975,8 +975,11 @@ BOOL WINAPI ExtTextOutW( HDC hdc, INT x, INT y, UINT flags, const RECT *rect,
         bidi_flags = (dc_attr->text_align & TA_RTLREADING) || (flags & ETO_RTLREADING)
             ? WINE_GCPW_FORCE_RTL : WINE_GCPW_FORCE_LTR;
 
-        BIDI_Reorder( hdc, str, count, GCP_REORDER, bidi_flags, NULL, 0, NULL,
-                      &glyphs, &glyphs_count, NULL );
+        if (BIDI_Reorder( hdc, str, count, GCP_REORDER, bidi_flags, NULL, 0, NULL,
+                      &glyphs, &glyphs_count, NULL ))
+        {
+            dx = NULL;
+        }
 
         flags |= ETO_IGNORELANGUAGE;
         if (glyphs)
@@ -2489,6 +2492,7 @@ static WCHAR *get_scalable_filename( const WCHAR *res, BOOL *hidden )
     if (size.u.LowPart < sizeof( *dos )) goto fail;
     dos = (const IMAGE_DOS_HEADER *)ptr;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto fail;
+    if ((ULONG)dos->e_lfanew >= RTL_IMAGE_MAX_DOS_HEADER) goto fail;
     if (size.u.LowPart < dos->e_lfanew + sizeof( *ne )) goto fail;
     ne = (const IMAGE_OS2_HEADER *)(ptr + dos->e_lfanew);
 
@@ -2509,6 +2513,45 @@ fail:
     return name;
 }
 
+static void redirect_path( UNICODE_STRING *path )
+{
+#ifndef _WIN64
+    static const WCHAR nt_sysdir[] = L"\\??\\C:\\windows\\system32\\";
+#ifdef __arm__
+    const WCHAR *dir = L"C:\\windows\\sysarm32";
+#else
+    const WCHAR *dir = L"C:\\windows\\syswow64";
+#endif
+
+    if (!NtCurrentTeb()->GdiBatchCount) return;  /* not wow64 */
+    if (((TEB64 *)NtCurrentTeb()->GdiBatchCount)->TlsSlots[WOW64_TLS_FILESYSREDIR]) return; /* disabled */
+    if (path->Length <= sizeof(nt_sysdir)) return;
+    if (wcsnicmp( path->Buffer, nt_sysdir, wcslen(nt_sysdir))) return;
+    memcpy( path->Buffer + 4, dir, wcslen(dir) * sizeof(WCHAR) );
+#endif
+}
+
+static BOOL get_system_dir_path( UNICODE_STRING *path, const WCHAR *str )
+{
+    WCHAR *system_dir;
+
+    if (!(system_dir = malloc( (MAX_PATH + 1 + wcslen( str )) * sizeof(WCHAR) ))) return FALSE;
+    GetSystemDirectoryW( system_dir, MAX_PATH );
+    wcscat( system_dir, L"\\" );
+    wcscat( system_dir, str );
+    if (!RtlDosPathNameToNtPathName_U( system_dir, path, NULL, NULL ))
+    {
+        free( system_dir );
+        return FALSE;
+    }
+
+    /* Windows does not redirect the path here, which is presumably a bug.
+     * Stratego (1997) tries to create a font resource in system32
+     * and fails on 64-bit Windows. */
+    redirect_path( path );
+    return TRUE;
+}
+
 static int add_font_resource( const WCHAR *str, DWORD flags, void *dv )
 {
     UNICODE_STRING nt_name;
@@ -2521,7 +2564,15 @@ static int add_font_resource( const WCHAR *str, DWORD flags, void *dv )
     if (!ret && !wcschr( str, '\\' ))
     {
         /* try as system font */
-        ret = NtGdiAddFontResourceW( str, lstrlenW( str ) + 1, 1, flags, 0, dv );
+
+        if ((ret = NtGdiAddFontResourceW( str, wcslen( str ) + 1, 1, flags, 0, dv )))
+            return ret;
+
+        if (!get_system_dir_path( &nt_name, str )) return 0;
+
+        ret = NtGdiAddFontResourceW( nt_name.Buffer, nt_name.Length / sizeof(WCHAR) + 1,
+                                     1, flags, 0, dv );
+        RtlFreeUnicodeString( &nt_name );
     }
     return ret;
 }
@@ -2534,6 +2585,8 @@ INT WINAPI AddFontResourceExW( const WCHAR *str, DWORD flags, void *dv )
     WCHAR *filename = NULL;
     BOOL hidden;
     INT ret;
+
+    TRACE( "%s flags %#lx res %p\n", debugstr_w(str), flags, dv );
 
     if ((ret = add_font_resource( str, flags, dv ))) return ret;
 
@@ -2556,7 +2609,15 @@ static int remove_font_resource( const WCHAR *str, DWORD flags, void *dv )
     if (!ret && !wcschr( str, '\\' ))
     {
         /* try as system font */
-        ret = NtGdiRemoveFontResourceW( str, lstrlenW( str ) + 1, 1, flags, 0, dv );
+
+        if ((ret = NtGdiRemoveFontResourceW( str, wcslen( str ) + 1, 1, flags, 0, dv )))
+            return ret;
+
+        if (!get_system_dir_path( &nt_name, str )) return 0;
+
+        ret = NtGdiRemoveFontResourceW( nt_name.Buffer, nt_name.Length / sizeof(WCHAR) + 1,
+                                        1, flags, 0, dv );
+        RtlFreeUnicodeString( &nt_name );
     }
     return ret;
 }
@@ -2770,6 +2831,11 @@ BOOL WINAPI CreateScalableFontResourceW( DWORD hidden, const WCHAR *resource_fil
         if (!RtlDosPathNameToNtPathName_U( path, &nt_name, NULL, NULL )) goto done;
     }
     else if (!RtlDosPathNameToNtPathName_U( font_file, &nt_name, NULL, NULL )) goto done;
+
+    /* Windows does not redirect the path here, which is presumably a bug.
+     * Stratego (1997) tries to create a font resource in system32
+     * and fails on 64-bit Windows. */
+    redirect_path( &nt_name );
 
     ret = NtGdiMakeFontDir( hidden, (BYTE *)&fontdir, sizeof(fontdir),
                             nt_name.Buffer, nt_name.Length + sizeof(WCHAR) );

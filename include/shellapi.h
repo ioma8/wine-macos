@@ -383,9 +383,9 @@ WINSHELLAPI void WINAPI WinExecErrorW(HWND hwnd,INT error, LPCWSTR lpstrFileName
 #define NIIF_WARNING            0x00000002
 #define NIIF_ERROR              0x00000003
 #define NIIF_USER               0x00000004
-#define NIIF_ICONMASK           0x0000000f
+#define NIIF_ICON_MASK          0x0000000f
 #define NIIF_NOSOUND            0x00000010
-#define NIIF_LARGEICON          0x00000020
+#define NIIF_LARGE_ICON         0x00000020
 
 /* dwMessage values */
 #define NIM_ADD                 0x00000000
@@ -504,6 +504,10 @@ typedef struct _SHQUERYRBINFO
     DWORDLONG i64NumItems;
 } SHQUERYRBINFO, *LPSHQUERYRBINFO;
 
+#define SHERB_NOCONFIRMATION    0x00000001
+#define SHERB_NOPROGRESSUI      0x00000002
+#define SHERB_NOSOUND           0x00000004
+
 WINSHELLAPI HRESULT     WINAPI SHEmptyRecycleBinA(HWND,LPCSTR,DWORD);
 WINSHELLAPI HRESULT     WINAPI SHEmptyRecycleBinW(HWND,LPCWSTR,DWORD);
 #define     SHEmptyRecycleBin WINELIB_NAME_AW(SHEmptyRecycleBin)
@@ -520,6 +524,13 @@ typedef struct tagNC_ADDRESS
    USHORT                   PortNumber;
    BYTE                     PrefixLength;
 } NC_ADDRESS, *PNC_ADDRESS;
+
+#if defined(_MSC_VER) || defined(__MINGW32__)
+# define WC_NETADDRESS       L"msctls_netaddress"
+#else
+static const WCHAR WC_NETADDRESS[] = { 'm','s','c','t','l','s','_',
+  'n','e','t','a','d','d','r','e','s','s',0 };
+#endif
 
 #define NCM_GETADDRESS      (WM_USER+1)
 #define NCM_SETALLOWTYPE    (WM_USER+2)
@@ -696,6 +707,9 @@ WINSHELLAPI HINSTANCE   WINAPI FindExecutableA(LPCSTR,LPCSTR,LPSTR);
 WINSHELLAPI HINSTANCE   WINAPI FindExecutableW(LPCWSTR,LPCWSTR,LPWSTR);
 #define                        FindExecutable WINELIB_NAME_AW(FindExecutable)
 WINSHELLAPI BOOL        WINAPI InitNetworkAddressControl(void);
+WINSHELLAPI BOOL        WINAPI IsLFNDriveA(LPCSTR);
+WINSHELLAPI BOOL        WINAPI IsLFNDriveW(LPCWSTR);
+#define                        IsLFNDrive WINELIB_NAME_AW(IsLFNDrive)
 WINSHELLAPI BOOL        WINAPI ShellAboutA(HWND,LPCSTR,LPCSTR,HICON);
 WINSHELLAPI BOOL        WINAPI ShellAboutW(HWND,LPCWSTR,LPCWSTR,HICON);
 #define                        ShellAbout WINELIB_NAME_AW(ShellAbout)
@@ -708,6 +722,7 @@ WINSHELLAPI DWORD       WINAPI DoEnvironmentSubstW(LPWSTR, UINT);
 WINSHELLAPI HRESULT     WINAPI SHEnumerateUnreadMailAccountsA(HKEY,DWORD,LPSTR,INT);
 WINSHELLAPI HRESULT     WINAPI SHEnumerateUnreadMailAccountsW(HKEY,DWORD,LPWSTR,INT);
 #define                        SHEnumerateUnreadMailAccounts WINELIB_NAME_AW(SHEnumerateUnreadMailAccounts)
+WINSHELLAPI HRESULT     WINAPI SHEvaluateSystemCommandTemplate(PCWSTR, PWSTR*, PWSTR*, PWSTR*);
 WINSHELLAPI HRESULT     WINAPI SHGetPropertyStoreForWindow(HWND,REFIID,void **);
 
 #ifdef __cplusplus

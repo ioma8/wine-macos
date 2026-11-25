@@ -202,12 +202,14 @@ static void test_getblend(void)
     status = GdipGetPathGradientBlend(NULL, NULL,  NULL,  1);
     expect(InvalidParameter, status);
 
-    blends[0] = (REAL)0xdeadbeef;
-    pos[0]    = (REAL)0xdeadbeef;
+    /* 12345.0f fits perfectly within the 24-bit mantissa of an IEEE 754 32-bit float,
+       avoiding x87 vs SSE rounding discrepancies */
+    blends[0] = 12345.0f;
+    pos[0]    = 12345.0f;
     status = GdipGetPathGradientBlend(brush, blends, pos, 1);
     expect(Ok, status);
     expectf(1.0, blends[0]);
-    expectf((REAL)0xdeadbeef, pos[0]);
+    expectf(12345.0f, pos[0]);
 
     GdipDeleteBrush((GpBrush*) brush);
 }
@@ -801,6 +803,13 @@ static void test_gradientgetrect(void)
     status = GdipCreateLineBrushFromRect(&rectf, 0, 0, LinearGradientModeHorizontal,
         WrapModeTile, &brush);
     expect(OutOfMemory, status);
+
+    status = GdipCreateLineBrushFromRect(NULL, 0, 0, LinearGradientModeHorizontal,
+        WrapModeTile, &brush);
+    expect(InvalidParameter, status);
+    status = GdipCreateLineBrushFromRectI(NULL, 0, 0, LinearGradientModeHorizontal,
+        WrapModeTile, &brush);
+    expect(InvalidParameter, status);
 
     for (i = 0; i < ARRAY_SIZE(create_from_rect); ++i)
     {

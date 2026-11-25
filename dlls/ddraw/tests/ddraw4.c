@@ -32,6 +32,7 @@ HRESULT WINAPI GetSurfaceFromDC(HDC dc, struct IDirectDrawSurface **surface, HDC
 
 static BOOL is_ddraw64 = sizeof(DWORD) != sizeof(DWORD *);
 static DEVMODEA registry_mode;
+static HWND foreground;
 
 static HRESULT (WINAPI *pDwmIsCompositionEnabled)(BOOL *);
 
@@ -118,6 +119,72 @@ static void flush_events(void)
             DispatchMessageA(&msg);
         diff = time - GetTickCount();
     }
+}
+
+static void pump_messages(void)
+{
+    MSG msg;
+
+    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
+        DispatchMessageA(&msg);
+}
+
+static HWND create_foreground_window(void)
+{
+    for (UINT retries = 5; retries; retries--)
+    {
+        HWND hwnd;
+        BOOL ret;
+
+        hwnd = CreateWindowW(L"static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 5, 5, NULL, NULL, NULL, NULL);
+        ok(hwnd != NULL, "CreateWindowW failed, error %lu\n", GetLastError());
+        flush_events();
+
+        if (GetForegroundWindow() == hwnd)
+            return hwnd;
+        ret = DestroyWindow(hwnd);
+        ok(ret, "DestroyWindow failed, error %lu\n", GetLastError());
+        flush_events();
+    }
+
+    ok(0, "Failed to create foreground window\n");
+    return NULL;
+}
+
+static LRESULT CALLBACK foreground_window_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_USER)
+        SetForegroundWindow((HWND)wparam);
+    if (msg == WM_CLOSE)
+        PostQuitMessage(0);
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static DWORD WINAPI foreground_window_thread(void *arg)
+{
+    HANDLE event = arg;
+    MSG msg;
+
+    foreground = create_foreground_window();
+    SetWindowLongPtrW(foreground, GWLP_WNDPROC, (LONG_PTR)foreground_window_wndproc);
+    SetEvent(event);
+
+    while (GetMessageW(&msg, NULL, 0, 0))
+    {
+        if (msg.message == WM_QUIT) break;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    return 0;
+}
+
+static void start_foreground_window_thread(void)
+{
+    HANDLE event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    CloseHandle(CreateThread(NULL, 0, foreground_window_thread, event, 0, NULL));
+    WaitForSingleObject(event, 10000);
+    CloseHandle(event);
 }
 
 static BOOL ddraw_get_identifier(IDirectDraw4 *ddraw, DDDEVICEIDENTIFIER *identifier)
@@ -1093,6 +1160,8 @@ static void test_clipper_blt(void)
     window = CreateWindowA("static", "ddraw_test", WS_OVERLAPPEDWINDOW,
             10, 10, 640, 480, 0, 0, 0, 0);
     ShowWindow(window, SW_SHOW);
+    flush_events();
+
     ddraw = create_ddraw();
     ok(!!ddraw, "Failed to create a ddraw object.\n");
 
@@ -2924,6 +2993,7 @@ static void test_window_style(void)
     RECT fullscreen_rect, r;
     HWND window, window2;
     IDirectDraw4 *ddraw;
+    unsigned int i;
     HRESULT hr;
     ULONG ref;
     BOOL ret;
@@ -2953,7 +3023,7 @@ static void test_window_style(void)
     GetClientRect(window, &r);
     todo_wine ok(!EqualRect(&r, &fullscreen_rect), "Client rect and window rect are equal.\n");
 
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
 
     tmp = GetWindowLongA(window, GWL_STYLE);
@@ -3041,7 +3111,7 @@ static void test_window_style(void)
     ok(tmp == exstyle, "Expected window extended style %#lx, got %#lx.\n", exstyle, tmp);
 
     ShowWindow(window, SW_SHOW);
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
     SetActiveWindow(window);
     ok(GetActiveWindow() == window, "Unexpected active window.\n");
@@ -3113,7 +3183,7 @@ static void test_window_style(void)
     expected_style = exstyle | WS_EX_TOPMOST;
     todo_wine ok(tmp == expected_style, "Expected window extended style %#lx, got %#lx.\n", expected_style, tmp);
 
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
     tmp = GetWindowLongA(window, GWL_STYLE);
     expected_style = style | WS_VISIBLE | WS_MINIMIZE;
@@ -3134,10 +3204,19 @@ static void test_window_style(void)
     ok(tmp & WS_VISIBLE, "Expected WS_VISIBLE.\n");
     tmp = GetWindowLongA(window, GWL_EXSTYLE);
     ok(tmp & WS_EX_TOPMOST, "Expected WS_EX_TOPMOST.\n");
-    ret = ShowWindow(window, SW_HIDE);
-    ok(ret, "ShowWindow failed, error %#lx.\n", GetLastError());
-    ret = SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
-    ok(ret, "SetWindowPos failed, error %#lx.\n", GetLastError());
+    for (i = 0; i < 5; ++i)
+    {
+        /* Try a few times to hide the window. Something in Win11 26H1 shows it again and makes it
+         * topmost. This is in addition to the ddraw periodic check below, which only makes it
+         * topmost but not visible */
+        ret = SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_HIDEWINDOW);
+        ok(ret, "SetWindowPos failed, error %#lx.\n", GetLastError());
+        tmp = GetWindowLongA(window, GWL_STYLE);
+        if (!(tmp & WS_VISIBLE))
+            break;
+        Sleep(100);
+    }
+    ok(i < 5, "Failed to hide the window.\n");
     tmp = GetWindowLongA(window, GWL_STYLE);
     ok(!(tmp & WS_VISIBLE), "Got unexpected WS_VISIBLE.\n");
     tmp = GetWindowLongA(window, GWL_EXSTYLE);
@@ -3524,7 +3603,7 @@ static void test_coop_level_mode_set(void)
 
     expect_messages = exclusive_focus_loss_messages;
     focus_test_ddraw = ddraw;
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
     ok(!expect_messages->message, "Expected message %#x, but didn't receive it.\n", expect_messages->message);
     focus_test_ddraw = NULL;
@@ -6119,7 +6198,7 @@ static void test_coop_level_activateapp(void)
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
 
     /* Exclusive with window not active. */
-    SetForegroundWindow(GetDesktopWindow());
+    SetForegroundWindow(foreground);
     activateapp_testdata.received = FALSE;
     hr = IDirectDraw4_SetCooperativeLevel(ddraw, window, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN);
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
@@ -6128,7 +6207,7 @@ static void test_coop_level_activateapp(void)
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
 
     /* Normal with window not active, then exclusive with the same window. */
-    SetForegroundWindow(GetDesktopWindow());
+    SetForegroundWindow(foreground);
     activateapp_testdata.received = FALSE;
     hr = IDirectDraw4_SetCooperativeLevel(ddraw, window, DDSCL_NORMAL);
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
@@ -6140,7 +6219,7 @@ static void test_coop_level_activateapp(void)
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
 
     /* Recursive set of DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN. */
-    SetForegroundWindow(GetDesktopWindow());
+    SetForegroundWindow(foreground);
     activateapp_testdata.received = FALSE;
     activateapp_testdata.ddraw = ddraw;
     activateapp_testdata.window = window;
@@ -6162,7 +6241,7 @@ static void test_coop_level_activateapp(void)
     ok(SUCCEEDED(hr), "Failed to set cooperative level, hr %#lx.\n", hr);
 
     /* Setting DDSCL_NORMAL with recursive invocation. */
-    SetForegroundWindow(GetDesktopWindow());
+    SetForegroundWindow(foreground);
     activateapp_testdata.received = FALSE;
     activateapp_testdata.ddraw = ddraw;
     activateapp_testdata.window = window;
@@ -10632,7 +10711,7 @@ static void test_lost_device(void)
         ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
     }
 
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
     hr = IDirectDraw4_TestCooperativeLevel(ddraw);
     ok(hr == DDERR_NOEXCLUSIVEMODE, "Got unexpected hr %#lx.\n", hr);
@@ -10732,7 +10811,7 @@ static void test_lost_device(void)
         ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
     }
 
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
     hr = IDirectDraw4_TestCooperativeLevel(ddraw);
     ok(hr == DD_OK, "Got unexpected hr %#lx.\n", hr);
@@ -16315,6 +16394,7 @@ static void test_map_synchronisation(void)
     IDirect3DVertexBuffer *buffer;
     IDirect3DViewport3 *viewport;
     D3DVERTEXBUFFERDESC vb_desc;
+    BOOL small_buffer = FALSE;
     IDirect3DDevice3 *device;
     BOOL unsynchronised, ret;
     IDirectDrawSurface4 *rt;
@@ -16457,7 +16537,17 @@ static void test_map_synchronisation(void)
     for (i = 0; i < ARRAY_SIZE(tests); ++i)
     {
         hr = IDirect3D3_CreateVertexBuffer(d3d, &vb_desc, &buffer, 0, NULL);
-        ok(SUCCEEDED(hr), "Failed to create vertex buffer, hr %#lx.\n", hr);
+        ok(SUCCEEDED(hr) || hr == D3DERR_TOOMANYVERTICES, "Failed to create vertex buffer, hr %#lx.\n", hr);
+        /* D3DDEVICEDESC.dwMaxVertexCount is a thing (in ddraw4 and earlier), but ignored by runtime and
+         * drivers. The 64k limit is likely due to the 16 bit indices used by d3d <= 7. */
+        if (hr == D3DERR_TOOMANYVERTICES && vb_desc.dwNumVertices >= 65535)
+        {
+            trace("Test draw needs more than 64k vertices, test results might be flaky.\n");
+            small_buffer = TRUE;
+            vb_desc.dwNumVertices = 65534;
+            hr = IDirect3D3_CreateVertexBuffer(d3d, &vb_desc, &buffer, 0, NULL);
+            ok(SUCCEEDED(hr), "Failed to create vertex buffer, hr %#lx.\n", hr);
+        }
         hr = IDirect3DVertexBuffer_Lock(buffer, DDLOCK_DISCARDCONTENTS, (void **)&quads, NULL);
         ok(SUCCEEDED(hr), "Failed to lock vertex buffer, hr %#lx.\n", hr);
         for (j = 0; j < vb_desc.dwNumVertices / 4; ++j)
@@ -16486,6 +16576,7 @@ static void test_map_synchronisation(void)
 
         colour = get_surface_color(rt, 320, 240);
         unsynchronised = compare_color(colour, 0x00ffff00, 1);
+        flaky_if(small_buffer && tests[i].unsynchronised)
         ok(tests[i].unsynchronised == unsynchronised, "Expected %s map for flags %#x.\n",
                 tests[i].unsynchronised ? "unsynchronised" : "synchronised", tests[i].flags);
 
@@ -17493,7 +17584,7 @@ static void test_killfocus(void)
     hr = IDirectDraw4_CreateSurface(killfocus_ddraw, &surface_desc, &killfocus_surface, NULL);
     ok(SUCCEEDED(hr), "Failed to create surface, hr %#lx.\n", hr);
 
-    SetForegroundWindow(GetDesktopWindow());
+    SetForegroundWindow(foreground);
     ok(!killfocus_ddraw, "WM_KILLFOCUS was not received.\n");
 
     DestroyWindow(window);
@@ -18103,11 +18194,17 @@ static void test_caps(void)
         {
             .dwSize = sizeof(DDSURFACEDESC2),
             .dwFlags = DDSD_CAPS | DDSD_PIXELFORMAT | DDSD_WIDTH | DDSD_HEIGHT,
-            .ddsCaps.dwCaps = DDSCAPS_ZBUFFER,
-            .ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT),
-            .ddpfPixelFormat.dwFlags = DDPF_ZBUFFER,
-            .ddpfPixelFormat.dwZBufferBitDepth = depth_caps[i].depth,
-            .ddpfPixelFormat.dwZBitMask = depth_caps[i].mask,
+            .ddsCaps =
+            {
+                .dwCaps = DDSCAPS_ZBUFFER,
+            },
+            .ddpfPixelFormat =
+            {
+                .dwSize = sizeof(DDPIXELFORMAT),
+                .dwFlags = DDPF_ZBUFFER,
+                .dwZBufferBitDepth = depth_caps[i].depth,
+                .dwZBitMask = depth_caps[i].mask,
+            },
             .dwWidth = 64,
             .dwHeight = 64,
         };
@@ -18199,11 +18296,17 @@ static void test_caps(void)
             {
                 .dwSize = sizeof(DDSURFACEDESC2),
                 .dwFlags = DDSD_CAPS | DDSD_PIXELFORMAT | DDSD_WIDTH | DDSD_HEIGHT,
-                .ddsCaps.dwCaps = DDSCAPS_ZBUFFER,
-                .ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT),
-                .ddpfPixelFormat.dwFlags = DDPF_ZBUFFER,
-                .ddpfPixelFormat.dwZBufferBitDepth = depth_caps[i].depth,
-                .ddpfPixelFormat.dwZBitMask = depth_caps[i].mask,
+                .ddsCaps =
+                {
+                    .dwCaps = DDSCAPS_ZBUFFER,
+                },
+                .ddpfPixelFormat =
+                {
+                    .dwSize = sizeof(DDPIXELFORMAT),
+                    .dwFlags = DDPF_ZBUFFER,
+                    .dwZBufferBitDepth = depth_caps[i].depth,
+                    .dwZBitMask = depth_caps[i].mask,
+                },
                 .dwWidth = 64,
                 .dwHeight = 64,
             };
@@ -18824,7 +18927,7 @@ static BOOL CALLBACK test_window_position_cb(HMONITOR monitor, HDC hdc, RECT *mo
     ret = SetWindowPos(window, 0, monitor_rect->left, monitor_rect->top, 0, 0,
             SWP_NOZORDER | SWP_NOSIZE);
     ok(ret, "SetWindowPos failed, error %lu.\n", GetLastError());
-    ret = SetForegroundWindow(GetDesktopWindow());
+    ret = SetForegroundWindow(foreground);
     ok(ret, "Failed to set foreground window.\n");
     flush_events();
     ret = ShowWindow(window, SW_RESTORE);
@@ -20457,6 +20560,137 @@ out:
     DestroyWindow(window);
 }
 
+static void check_surface_clipper(IDirectDrawSurface4 *surface,
+        IDirectDrawClipper *clipper, RECT *window_rect, DWORD style)
+{
+    unsigned int c;
+    DDBLTFX fx;
+    HRESULT hr;
+
+    memset(&fx, 0, sizeof(fx));
+    fx.dwSize = sizeof(fx);
+    fx.dwFillColor = 0xff00ff00;
+
+    fill_surface(surface, 0xffff0000);
+
+    /* Clippers with a region work. Clippers with a window work on Windows 98,
+     * but are ignored on modern windows. */
+
+    hr = IDirectDrawSurface4_SetClipper(surface, clipper);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    c = get_surface_color(surface, 101, 101);
+    ok(c == 0x00ff0000, "got %#x.\n", c);
+    hr = IDirectDrawSurface4_Blt(surface, NULL, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &fx);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    c = get_surface_color(surface, 0, 0);
+    ok(c == 0x00ff0000, "got %#x.\n", c);
+    c = get_surface_color(surface, 101, 101);
+    ok(c == 0x0000ff00, "got %#x.\n", c);
+
+    hr = IDirectDrawSurface4_SetClipper(surface, NULL);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    fill_surface(surface, 0);
+}
+
+static void test_clipper_in_exclusive_fullscreen(void)
+{
+    static const struct
+    {
+        DWORD style;
+        BOOL parent;
+    }
+    tests[] =
+    {
+        { WS_POPUP },
+        { WS_POPUP, TRUE },
+        { WS_CHILD, TRUE },
+        { WS_OVERLAPPED },
+        { WS_CHILD | WS_VISIBLE, TRUE },
+        { WS_POPUP | WS_VISIBLE },
+    };
+    IDirectDrawSurface4 *primary, *offscreen;
+    IDirectDrawClipper *clipper;
+    DDSURFACEDESC2 surface_desc;
+    IDirectDraw4 *ddraw;
+    RGNDATA *rgn_data;
+    DWORD ret, style;
+    RECT window_rect;
+    ULONG refcount;
+    unsigned int i;
+    HWND window;
+    HRESULT hr;
+    HRGN rgn;
+
+    if (!(ddraw = create_ddraw()))
+    {
+        skip("Failed to create ddraw, skipping test.\n");
+        return;
+    }
+    hr = IDirectDraw4_CreateClipper(ddraw, 0, &clipper, NULL);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+
+    window = CreateWindowA("static", "ddraw_fullscreen", WS_POPUP | WS_VISIBLE, 0, 0, 640, 480, NULL, NULL, NULL, NULL);
+    pump_messages();
+    hr = IDirectDraw4_SetCooperativeLevel(ddraw, NULL, DDSCL_NORMAL);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    hr = IDirectDraw4_SetCooperativeLevel(ddraw, window, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    pump_messages();
+
+    rgn = CreateRectRgn(100, 100, 200, 200);
+    ok(!!rgn, "Failed to create region.\n");
+    ret = GetRegionData(rgn, 0, NULL);
+    rgn_data = malloc(ret);
+    ret = GetRegionData(rgn, ret, rgn_data);
+    ok(!!ret, "Failed to get region data.\n");
+    DeleteObject(rgn);
+    hr = IDirectDrawClipper_SetClipList(clipper, rgn_data, 0);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    free(rgn_data);
+
+    memset(&surface_desc, 0, sizeof(surface_desc));
+    surface_desc.dwSize = sizeof(surface_desc);
+    surface_desc.dwFlags = DDSD_CAPS;
+    surface_desc.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE;
+    hr = IDirectDraw4_CreateSurface(ddraw, &surface_desc, &primary, NULL);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+
+    surface_desc.dwFlags = DDSD_CAPS | DDSD_WIDTH | DDSD_HEIGHT;
+    surface_desc.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN;
+    surface_desc.dwWidth = 640;
+    surface_desc.dwHeight = 480;
+    hr = IDirectDraw4_CreateSurface(ddraw, &surface_desc, &offscreen, NULL);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+
+    for (i = 0; i < ARRAY_SIZE(tests); ++i)
+    {
+        winetest_push_context("test %u", i);
+        style = tests[i].style;
+
+        winetest_push_context("primary");
+        check_surface_clipper(primary, clipper, &window_rect, style);
+        winetest_pop_context();
+
+        winetest_push_context("offscreen");
+        check_surface_clipper(offscreen, clipper, &window_rect, style);
+        winetest_pop_context();
+
+        winetest_pop_context();
+    }
+
+    hr = IDirectDraw4_SetCooperativeLevel(ddraw, NULL, DDSCL_NORMAL);
+    ok(hr == DD_OK, "got %#lx.\n", hr);
+    IDirectDrawClipper_Release(clipper);
+    refcount = IDirectDrawSurface4_Release(offscreen);
+    ok(!refcount, "Got unexpected refcount %lu.\n", refcount);
+    refcount = IDirectDrawSurface4_Release(primary);
+    ok(!refcount, "Got unexpected refcount %lu.\n", refcount);
+
+    IDirectDraw4_Release(ddraw);
+    DestroyWindow(window);
+    pump_messages();
+}
+
 START_TEST(ddraw4)
 {
     DDDEVICEIDENTIFIER identifier;
@@ -20494,6 +20728,8 @@ START_TEST(ddraw4)
 
     if ((dwmapi = LoadLibraryA("dwmapi.dll")))
         pDwmIsCompositionEnabled = (void *)GetProcAddress(dwmapi, "DwmIsCompositionEnabled");
+
+    start_foreground_window_thread();
 
     test_process_vertices();
     test_coop_level_create_device_window();
@@ -20604,4 +20840,5 @@ START_TEST(ddraw4)
     test_sysmem_x_channel();
     test_yuv_blit();
     test_blit_to_self();
+    test_clipper_in_exclusive_fullscreen();
 }

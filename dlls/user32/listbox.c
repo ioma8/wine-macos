@@ -31,7 +31,6 @@
 #include "controls.h"
 #include "wine/exception.h"
 #include "wine/debug.h"
-#include "wine/heap.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(listbox);
 
@@ -124,6 +123,16 @@ static TIMER_DIRECTION LISTBOX_Timer = LB_TIMER_NONE;
 
 static LRESULT LISTBOX_GetItemRect( const LB_DESCR *descr, INT index, RECT *rect );
 
+static LB_DESCR *get_control_state( HWND hwnd )
+{
+    return (LB_DESCR *)NtUserGetPrivateData( hwnd, 0, sizeof(LB_DESCR *) );
+}
+
+static LB_DESCR *set_control_state( HWND hwnd, LB_DESCR *state )
+{
+    return (LB_DESCR *)NtUserSetPrivateData( hwnd, 0, sizeof(LB_DESCR *), (LONG_PTR)state );
+}
+
 /*
    For listboxes without LBS_NODATA, an array of LB_ITEMDATA is allocated
    to store the states of each item into descr->u.items.
@@ -149,7 +158,7 @@ static BOOL resize_storage(LB_DESCR *descr, UINT items_size)
         items_size = (items_size + LB_ARRAY_GRANULARITY - 1) & ~(LB_ARRAY_GRANULARITY - 1);
         if ((descr->style & (LBS_NODATA | LBS_MULTIPLESEL | LBS_EXTENDEDSEL)) != LBS_NODATA)
         {
-            items = heap_realloc(descr->u.items, items_size * get_sizeof_item(descr));
+            items = realloc(descr->u.items, items_size * get_sizeof_item(descr));
             if (!items)
             {
                 SEND_NOTIFICATION(descr, LBN_ERRSPACE);
@@ -729,10 +738,7 @@ static void LISTBOX_SetRedraw( LB_DESCR *descr, BOOL on )
         {     /* page was changed while setredraw false, refresh automatically */
             NtUserInvalidateRect(descr->self, NULL, TRUE);
             if ((descr->top_item + descr->page_size) > descr->nb_items)
-            {      /* reset top of page if less than number of items/page */
-                descr->top_item = descr->nb_items - descr->page_size;
-                if (descr->top_item < 0) descr->top_item = 0;
-            }
+                descr->top_item = LISTBOX_GetMaxTopIndex(descr);
             descr->style &= ~LBS_DISPLAYCHANGED;
         }
         LISTBOX_UpdateScroll( descr );
@@ -1802,7 +1808,7 @@ static void LISTBOX_ResetContent( LB_DESCR *descr )
 
     if (!(descr->style & LBS_NODATA))
         for (i = descr->nb_items - 1; i >= 0; i--) LISTBOX_DeleteItem(descr, i);
-    HeapFree( GetProcessHeap(), 0, descr->u.items );
+    free( descr->u.items );
     descr->nb_items      = 0;
     descr->top_item      = 0;
     descr->selected_item = -1;
@@ -2134,8 +2140,8 @@ static LRESULT LISTBOX_HandleLButtonDown( LB_DESCR *descr, DWORD keys, INT x, IN
                             MAKELPARAM( x, y ) );
     }
 
-    descr->captured = TRUE;
     NtUserSetCapture( descr->self );
+    descr->captured = TRUE;
 
     if (descr->style & (LBS_EXTENDEDSEL | LBS_MULTIPLESEL))
     {
@@ -2602,7 +2608,7 @@ static BOOL LISTBOX_Create( HWND hwnd, LPHEADCOMBO lphc )
         descr->owner = lphc->self;
     }
 
-    SetWindowLongPtrW( descr->self, 0, (LONG_PTR)descr );
+    set_control_state( descr->self, descr );
 
 /*    if (wnd->dwExStyle & WS_EX_NOPARENTNOTIFY) descr->style &= ~LBS_NOTIFY;
  */
@@ -2647,7 +2653,7 @@ static BOOL LISTBOX_Create( HWND hwnd, LPHEADCOMBO lphc )
 static BOOL LISTBOX_Destroy( LB_DESCR *descr )
 {
     LISTBOX_ResetContent( descr );
-    SetWindowLongPtrW( descr->self, 0, 0 );
+    set_control_state( descr->self, NULL );
     HeapFree( GetProcessHeap(), 0, descr );
     return TRUE;
 }
@@ -2658,9 +2664,11 @@ static BOOL LISTBOX_Destroy( LB_DESCR *descr )
  */
 LRESULT ListBoxWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, BOOL unicode )
 {
-    LB_DESCR *descr = (LB_DESCR *)GetWindowLongPtrW( hwnd, 0 );
+    LB_DESCR *descr = get_control_state( hwnd );
     HEADCOMBO *lphc = NULL;
     LRESULT ret;
+
+    if (msg == WM_CREATE || msg == WM_NCCREATE) NtUserSetWindowFNID( hwnd, MAKE_FNID(NTUSER_WNDPROC_LISTBOX) );
 
     if (!descr)
     {
@@ -2671,7 +2679,7 @@ LRESULT ListBoxWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 	    CREATESTRUCTW *lpcs = (CREATESTRUCTW *)lParam;
             if (lpcs->style & LBS_COMBOBOX) lphc = lpcs->lpCreateParams;
             if (!LISTBOX_Create( hwnd, lphc )) return -1;
-            TRACE("creating hwnd %p descr %p\n", hwnd, (void *)GetWindowLongPtrW( hwnd, 0 ) );
+            TRACE("creating hwnd %p descr %p\n", hwnd, get_control_state( hwnd ) );
             return 0;
         }
         /* Ignore all other messages before we get a WM_CREATE */
@@ -2870,6 +2878,8 @@ LRESULT ListBoxWndProc_common( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
         return descr->focus_item;
 
     case LB_SETTOPINDEX:
+        if (((INT)wParam < 0) || ((INT)wParam >= descr->nb_items))
+            return LB_ERR;
         return LISTBOX_SetTopItem( descr, wParam, TRUE );
 
     case LB_SETCOLUMNWIDTH:

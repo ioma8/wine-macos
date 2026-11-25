@@ -1044,7 +1044,7 @@ static void test_sample_time(IBaseFilter *filter, IPin *pin, IMemInputPin *input
 
     hr = IMediaSeeking_GetCurrentPosition(seeking, &time);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    ok(time == 10000000, "Got time %s.\n", wine_dbgstr_longlong(time));
+    ok(time == 10000000, "Got time %I64d.\n", time);
 
     ok(WaitForSingleObject(thread, 100) == WAIT_TIMEOUT, "Thread should block in Receive().\n");
 
@@ -2063,6 +2063,15 @@ static void test_video_window_position(IVideoWindow *window, HWND hwnd, HWND our
     ok(top == 200, "Got top %ld.\n", top);
     ok(width == 300, "Got width %ld.\n", width);
     ok(height == 400, "Got height %ld.\n", height);
+
+    left = top = width = height = 0xdeadbeef;
+    hr = IVideoWindow_GetRestorePosition(window, &left, &top, &width, &height);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(left == 100, "Got left %ld.\n", left);
+    ok(top == 200, "Got top %ld.\n", top);
+    ok(width == 300, "Got width %ld.\n", width);
+    ok(height == 400, "Got height %ld.\n", height);
+
     GetWindowRect(hwnd, &rect);
     ok(rect.left == 100, "Got window left %ld.\n", rect.left);
     ok(rect.top == 200, "Got window top %ld.\n", rect.top);
@@ -2288,13 +2297,10 @@ static void test_video_window_messages(IVideoWindow *window, HWND hwnd, HWND our
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 }
 
-static void test_video_window_autoshow(IVideoWindow *window, IFilterGraph2 *graph, HWND hwnd)
+static void test_video_window_autoshow(IVideoWindow *window, IBaseFilter *filter, HWND hwnd)
 {
-    IMediaControl *control;
     HRESULT hr;
     LONG l;
-
-    IFilterGraph2_QueryInterface(graph, &IID_IMediaControl, (void **)&control);
 
     hr = IVideoWindow_get_AutoShow(window, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
@@ -2303,14 +2309,31 @@ static void test_video_window_autoshow(IVideoWindow *window, IFilterGraph2 *grap
     hr = IVideoWindow_put_Visible(window, OAFALSE);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-    hr = IMediaControl_Pause(control);
+    hr = IBaseFilter_Pause(filter);
     ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 
     hr = IVideoWindow_get_Visible(window, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(l == OATRUE, "Got %ld.\n", l);
 
-    hr = IMediaControl_Stop(control);
+    hr = IVideoWindow_put_Visible(window, OAFALSE);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IBaseFilter_Run(filter, 0);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    hr = IVideoWindow_get_Visible(window, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == OATRUE, "Got %ld.\n", l);
+
+    hr = IBaseFilter_Pause(filter);
+    todo_wine ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
+
+    hr = IVideoWindow_get_Visible(window, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == OATRUE, "Got %ld.\n", l);
+
+    hr = IBaseFilter_Stop(filter);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
     hr = IVideoWindow_get_Visible(window, &l);
@@ -2323,17 +2346,22 @@ static void test_video_window_autoshow(IVideoWindow *window, IFilterGraph2 *grap
     hr = IVideoWindow_put_Visible(window, OAFALSE);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-    hr = IMediaControl_Pause(control);
+    hr = IBaseFilter_Pause(filter);
     ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 
     hr = IVideoWindow_get_Visible(window, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(l == OAFALSE, "Got %ld.\n", l);
 
-    hr = IMediaControl_Stop(control);
-    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IBaseFilter_Pause(filter);
+    todo_wine ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
 
-    IMediaControl_Release(control);
+    hr = IVideoWindow_get_Visible(window, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == OAFALSE, "Got %ld.\n", l);
+
+    hr = IBaseFilter_Stop(filter);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
 }
 
 static void test_video_window(void)
@@ -2451,7 +2479,7 @@ static void test_video_window(void)
     test_video_window_style(window, hwnd, our_hwnd);
     test_video_window_state(window, hwnd, our_hwnd);
     test_video_window_position(window, hwnd, our_hwnd);
-    test_video_window_autoshow(window, graph, hwnd);
+    test_video_window_autoshow(window, filter, hwnd);
     test_video_window_owner(window, hwnd, our_hwnd);
     test_video_window_messages(window, hwnd, our_hwnd);
 
@@ -2817,8 +2845,13 @@ static void test_basic_video(void)
 
     hr = IBasicVideo_get_VideoWidth(video, NULL);
     ok(hr == E_POINTER, "Got hr %#lx.\n", hr);
+    hr = IBasicVideo_get_VideoWidth(video, &l);
+    ok(hr == VFW_E_NOT_CONNECTED, "Got hr %#lx.\n", hr);
+
     hr = IBasicVideo_get_VideoHeight(video, NULL);
     ok(hr == E_POINTER, "Got hr %#lx.\n", hr);
+    hr = IBasicVideo_get_VideoHeight(video, &l);
+    ok(hr == VFW_E_NOT_CONNECTED, "Got hr %#lx.\n", hr);
 
     hr = IBasicVideo_get_SourceLeft(video, NULL);
     ok(hr == E_POINTER, "Got hr %#lx.\n", hr);
@@ -2888,6 +2921,16 @@ static void test_basic_video(void)
     hr = IBasicVideo_get_BitErrorRate(video, &l);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     ok(!l, "Got bit rate %ld.\n", l);
+
+    l = 0xdeadbeef;
+    hr = IBasicVideo_get_VideoWidth(video, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == 600, "Got video width %ld.\n", l);
+
+    l = 0xdeadbeef;
+    hr = IBasicVideo_get_VideoHeight(video, &l);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(l == 400, "Got video height %ld.\n", l);
 
     hr = IBasicVideo_GetVideoPaletteEntries(video, 0, 1, &l, NULL);
     todo_wine ok(hr == VFW_E_NO_PALETTE_AVAILABLE, "Got hr %#lx.\n", hr);

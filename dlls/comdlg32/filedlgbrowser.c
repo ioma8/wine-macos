@@ -38,7 +38,6 @@
 #include "shlguid.h"
 #include "servprov.h"
 #include "wine/debug.h"
-#include "wine/heap.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(commdlg);
 
@@ -157,7 +156,7 @@ IShellBrowser * IShellBrowserImpl_Construct(HWND hwndOwner)
     FileOpenDlgInfos *fodInfos = get_filedlg_infoptr(hwndOwner);
     IShellBrowserImpl *sb;
 
-    sb = heap_alloc(sizeof(*sb));
+    sb = malloc(sizeof(*sb));
 
     /* Initialisation of the member variables */
     sb->ref=1;
@@ -230,7 +229,7 @@ static ULONG WINAPI IShellBrowserImpl_Release(IShellBrowser * iface)
     TRACE("(%p,%lu)\n", This, ref + 1);
 
     if (!ref)
-        heap_free(This);
+        free(This);
 
     return ref;
 }
@@ -948,8 +947,6 @@ static HRESULT WINAPI IShellBrowserImpl_IServiceProvider_QueryInterface(
 {
     IShellBrowserImpl *This = impl_from_IServiceProvider(iface);
 
-    FIXME("(%p)\n", This);
-
     return IShellBrowserImpl_QueryInterface(&This->IShellBrowser_iface,riid,ppvObj);
 }
 
@@ -960,8 +957,6 @@ static ULONG WINAPI IShellBrowserImpl_IServiceProvider_AddRef(IServiceProvider *
 {
     IShellBrowserImpl *This = impl_from_IServiceProvider(iface);
 
-    FIXME("(%p)\n", This);
-
     return IShellBrowserImpl_AddRef(&This->IShellBrowser_iface);
 }
 
@@ -971,8 +966,6 @@ static ULONG WINAPI IShellBrowserImpl_IServiceProvider_AddRef(IServiceProvider *
 static ULONG WINAPI IShellBrowserImpl_IServiceProvider_Release(IServiceProvider * iface)
 {
     IShellBrowserImpl *This = impl_from_IServiceProvider(iface);
-
-    FIXME("(%p)\n", This);
 
     return IShellBrowserImpl_Release(&This->IShellBrowser_iface);
 }

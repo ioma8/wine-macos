@@ -125,6 +125,7 @@ extern "C" {
 #define JOB_STATUS_DELETED      0x0100
 #define JOB_STATUS_BLOCKED_DEVQ 0x0200
 #define JOB_STATUS_USER_INTERVENTION 0x0400
+#define JOB_STATUS_RESTART      0x0800
 
 #define JOB_POSITION_UNSPECIFIED 1
 
@@ -1794,6 +1795,7 @@ BOOL WINAPI XcvDataW(HANDLE hXcv, LPCWSTR pszDataName, PBYTE pInputData,
 
 BOOL WINAPI IsValidDevmodeA(PDEVMODEA pDevMode, SIZE_T size);
 BOOL WINAPI IsValidDevmodeW(PDEVMODEW pDevMode, SIZE_T size);
+#define IsValidDevmode WINELIB_NAME_AW(IsValidDevmode)
 
 HANDLE WINAPI GetSpoolFileHandle(HANDLE printer);
 

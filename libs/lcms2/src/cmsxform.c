@@ -1,7 +1,7 @@
 //---------------------------------------------------------------------------------
 //
 //  Little Color Management System
-//  Copyright (c) 1998-2024 Marti Maria Saguer
+//  Copyright (c) 1998-2026 Marti Maria Saguer
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files (the "Software"),
@@ -499,7 +499,6 @@ void PrecalculatedXFORMGamutCheck(_cmsTRANSFORM* p,
     }
 }
 
-
 // No gamut check, Cache, 16 bits,
 static
 void CachedXFORM(_cmsTRANSFORM* p,
@@ -921,7 +920,6 @@ _cmsTRANSFORM* AllocEmptyTransform(cmsContext ContextID, cmsPipeline* lut,
         // Get formatter function always return a valid union, but the contents of this union may be NULL.
         p ->FromInputFloat = _cmsGetFormatter(ContextID, *InputFormat,  cmsFormatterInput, CMS_PACK_FLAGS_FLOAT).FmtFloat;
         p ->ToOutputFloat  = _cmsGetFormatter(ContextID, *OutputFormat, cmsFormatterOutput, CMS_PACK_FLAGS_FLOAT).FmtFloat;
-        *dwFlags |= cmsFLAGS_CAN_CHANGE_FORMATTER;
 
         if (p ->FromInputFloat == NULL || p ->ToOutputFloat == NULL) {
 
@@ -1072,7 +1070,9 @@ cmsBool  IsProperColorSpace(cmsColorSpaceSignature Check, cmsUInt32Number dwForm
     int Space1 = (int) T_COLORSPACE(dwFormat);
     int Space2 = _cmsLCMScolorSpace(Check);
 
-    if (Space1 == PT_ANY) return TRUE;
+    if (dwFormat == 0) return TRUE; // Bypass used by linkicc
+
+    if (Space1 == PT_ANY) return (T_CHANNELS(dwFormat) == cmsChannelsOf(Check));
     if (Space1 == Space2) return TRUE;
 
     if (Space1 == PT_LabV2 && Space2 == PT_Lab) return TRUE;
@@ -1154,6 +1154,11 @@ cmsHTRANSFORM CMSEXPORT cmsCreateExtendedTransform(cmsContext ContextID,
         if (hGamutProfile == NULL) dwFlags &= ~cmsFLAGS_GAMUTCHECK;
     }
 
+    if ((dwFlags & cmsFLAGS_GAMUTCHECK) && (nGamutPCSposition <= 0 || nGamutPCSposition > nProfiles - 1)) {
+        cmsSignalError(ContextID, cmsERROR_RANGE, "Wrong gamut PCS position '%d'", nGamutPCSposition);
+        return NULL;
+    }
+
     // On floating point transforms, inhibit cache
     if (_cmsFormatterIsFloat(InputFormat) || _cmsFormatterIsFloat(OutputFormat))
         dwFlags |= cmsFLAGS_NOCACHE;
@@ -1217,12 +1222,20 @@ cmsHTRANSFORM CMSEXPORT cmsCreateExtendedTransform(cmsContext ContextID,
    
 
     // Create a gamut check LUT if requested
-    if (hGamutProfile != NULL && (dwFlags & cmsFLAGS_GAMUTCHECK))
+    if (hGamutProfile != NULL && (dwFlags & cmsFLAGS_GAMUTCHECK)) {
+
         xform ->GamutCheck  = _cmsCreateGamutCheckPipeline(ContextID, hProfiles,
                                                         BPC, Intents,
                                                         AdaptationStates,
                                                         nGamutPCSposition,
                                                         hGamutProfile);
+        if (xform->GamutCheck == NULL) {
+            cmsSignalError(ContextID, cmsERROR_NULL, "Could't create gamut check on transform");
+            cmsDeleteTransform(xform);
+            return NULL;
+        }
+
+    }
 
 
     // Try to read input and output colorant table
@@ -1435,6 +1448,22 @@ cmsUInt32Number CMSEXPORT cmsGetTransformOutputFormat(cmsHTRANSFORM hTransform)
     return xform->OutputFormat;
 }
 
+// Returns the optimized pipeline (Lut) inside a transform. Read-only; do not free.
+cmsPipeline* CMSEXPORT cmsGetTransformPipeline(cmsHTRANSFORM hTransform)
+{
+    _cmsTRANSFORM* xform = (_cmsTRANSFORM*) hTransform;
+    if (xform == NULL) return NULL;
+    return xform->Lut;
+}
+
+// Returns the gamut-check pipeline inside a transform. Read-only; do not free.
+cmsPipeline* CMSEXPORT cmsGetTransformGamutCheckPipeline(cmsHTRANSFORM hTransform)
+{
+    _cmsTRANSFORM* xform = (_cmsTRANSFORM*) hTransform;
+    if (xform == NULL) return NULL;
+    return xform->GamutCheck;
+}
+
 // For backwards compatibility
 cmsBool CMSEXPORT cmsChangeBuffersFormat(cmsHTRANSFORM hTransform,
                                          cmsUInt32Number InputFormat,
@@ -1447,7 +1476,7 @@ cmsBool CMSEXPORT cmsChangeBuffersFormat(cmsHTRANSFORM hTransform,
     // We only can afford to change formatters if previous transform is at least 16 bits
     if (!(xform ->dwOriginalFlags & cmsFLAGS_CAN_CHANGE_FORMATTER)) {
 
-        cmsSignalError(xform ->ContextID, cmsERROR_NOT_SUITABLE, "cmsChangeBuffersFormat works only on transforms created originally with at least 16 bits of precision");
+        cmsSignalError(xform ->ContextID, cmsERROR_NOT_SUITABLE, "cmsChangeBuffersFormat works only on transforms created originally with 16 bits of precision");
         return FALSE;
     }
 
@@ -1465,4 +1494,20 @@ cmsBool CMSEXPORT cmsChangeBuffersFormat(cmsHTRANSFORM hTransform,
     xform ->FromInput    = FromInput;
     xform ->ToOutput     = ToOutput;
     return TRUE;
+}
+
+cmsNAMEDCOLORLIST* CMSEXPORT cmsGetTransformInputColorants(cmsHTRANSFORM hTransform)
+{
+    _cmsTRANSFORM* xform = (_cmsTRANSFORM*)hTransform;
+
+    if (xform == NULL) return NULL;
+    return xform->InputColorant;
+}
+
+cmsNAMEDCOLORLIST* CMSEXPORT cmsGetTransformOutputColorants(cmsHTRANSFORM hTransform)
+{
+    _cmsTRANSFORM* xform = (_cmsTRANSFORM*)hTransform;
+
+    if (xform == NULL) return NULL;
+    return xform->OutputColorant;
 }

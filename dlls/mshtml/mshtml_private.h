@@ -160,6 +160,7 @@ struct constructor;
     XDIID(DispHTMLWindow2) \
     XDIID(DispHTMLXMLHttpRequest) \
     XDIID(DispXDomainRequest) \
+    XDIID(DispXMLSerializer) \
     XDIID(DispSVGCircleElement) \
     XDIID(DispSVGSVGElement) \
     XDIID(DispSVGTSpanElement) \
@@ -176,6 +177,7 @@ struct constructor;
     XIID(IDOMUIEvent) \
     XIID(IDOMDocumentType) \
     XIID(IDOMParser) \
+    XIID(IDOMXmlSerializer) \
     XIID(IDocumentEvent) \
     XIID(IDocumentRange) \
     XIID(IDocumentSelector) \
@@ -320,8 +322,11 @@ struct constructor;
     XIID(IWineHTMLWindowCompatPrivate) \
     XIID(IWineCSSProperties) \
     XIID(IWinePageTransitionEvent) \
+    XIID(IWinePerformancePrivate) \
     XIID(IWineXMLHttpRequestPrivate) \
     XIID(IWineMSHTMLConsole) \
+    XIID(IWineMSHTMLCrypto) \
+    XIID(IWineMSHTMLSubtleCrypto) \
     XIID(IWineMSHTMLMediaQueryList) \
     XIID(IWineMSHTMLMutationObserver)
 
@@ -371,6 +376,11 @@ typedef struct dispex_static_data_t dispex_static_data_t;
 typedef struct {
     UINT_PTR x;
 } nsCycleCollectingAutoRefCnt;
+
+static inline UINT_PTR NS_REFCOUNT_VALUE(nsCycleCollectingAutoRefCnt ref)
+{
+    return ref.x >> 2;
+}
 
 /*
    dispex is our base IDispatchEx implementation for all mshtml objects, and the vtbl allows
@@ -442,6 +452,7 @@ typedef struct {
     X(ClientRectList)                      \
     X(Comment)                             \
     X(Console)                             \
+    X(Crypto)                              \
     X(CustomEvent)                         \
     X(DOMImplementation)                   \
     X(DOMParser)                           \
@@ -519,13 +530,15 @@ typedef struct {
     X(StorageEvent)                        \
     X(StyleSheet)                          \
     X(StyleSheetList)                      \
+    X(SubtleCrypto)                        \
     X(Text)                                \
     X(TextRange)                           \
     X(UIEvent)                             \
     X(Window)                              \
     X(XDomainRequest)                      \
     X(XMLDocument)                         \
-    X(XMLHttpRequest)
+    X(XMLHttpRequest)                      \
+    X(XMLSerializer)
 
 typedef enum {
     OBJID_NONE,
@@ -630,14 +643,14 @@ typedef struct {
     void (NSAPI *delete_cycle_collectable)(void*);
 } CCObjCallback;
 
-DEFINE_GUID(IID_nsXPCOMCycleCollectionParticipant, 0x9674489b,0x1f6f,0x4550,0xa7,0x30, 0xcc,0xae,0xdd,0x10,0x4c,0xf9);
-
 extern nsrefcnt (__cdecl *ccref_incr)(nsCycleCollectingAutoRefCnt*,nsISupports*);
 extern nsrefcnt (__cdecl *ccref_decr)(nsCycleCollectingAutoRefCnt*,nsISupports*,ExternalCycleCollectionParticipant*);
 extern void (__cdecl *ccref_init)(nsCycleCollectingAutoRefCnt*,nsrefcnt);
 extern void (__cdecl *ccp_init)(ExternalCycleCollectionParticipant*,const CCObjCallback*);
 extern void (__cdecl *describe_cc_node)(nsCycleCollectingAutoRefCnt*,const char*,nsCycleCollectionTraversalCallback*);
 extern void (__cdecl *note_cc_edge)(nsISupports*,const char*,nsCycleCollectionTraversalCallback*);
+HRESULT WINAPI cc_participant_Traverse(IWineCCParticipant*,void*,void*,void*,const struct cc_traverse_ops*);
+extern IWineCCParticipant cc_participant;
 
 void init_dispatch(DispatchEx*,dispex_static_data_t*,HTMLInnerWindow*,compat_mode_t);
 void init_dispatch_from_desc(DispatchEx*,dispex_data_t*,HTMLInnerWindow*,DispatchEx*);
@@ -807,6 +820,7 @@ struct HTMLInnerWindow {
     IHTMLStorage *session_storage;
     IHTMLStorage *local_storage;
     IWineMSHTMLConsole *console;
+    IWineMSHTMLCrypto *crypto;
 
     BOOL static_props_filled;
     BOOL performance_initialized;
@@ -911,7 +925,7 @@ struct HTMLDocumentObj {
     ISupportErrorInfo ISupportErrorInfo_iface;
     IProvideMultipleClassInfo IProvideMultipleClassInfo_iface;
     IMarkupServices IMarkupServices_iface;
-    IMarkupContainer IMarkupContainer_iface;
+    IMarkupContainer2 IMarkupContainer2_iface;
     IDisplayServices IDisplayServices_iface;
     IDocumentRange IDocumentRange_iface;
     IOleDocumentView IOleDocumentView_iface;
@@ -1124,7 +1138,7 @@ struct HTMLDocumentNode {
     ISupportErrorInfo            ISupportErrorInfo_iface;
     IProvideMultipleClassInfo    IProvideMultipleClassInfo_iface;
     IMarkupServices              IMarkupServices_iface;
-    IMarkupContainer             IMarkupContainer_iface;
+    IMarkupContainer2            IMarkupContainer2_iface;
     IDisplayServices             IDisplayServices_iface;
     IDocumentRange               IDocumentRange_iface;
     IPersistMoniker              IPersistMoniker_iface;
@@ -1552,7 +1566,7 @@ LONG get_task_target_magic(void);
 HRESULT push_task(task_t*,task_proc_t,task_proc_t,LONG);
 HRESULT push_event_task(event_task_t*,HTMLInnerWindow*,event_task_proc_t,event_task_proc_t,LONG);
 void remove_target_tasks(LONG);
-ULONGLONG get_time_stamp(void);
+double get_time_stamp(void);
 
 enum timer_type {
     TIMER_TIMEOUT,
@@ -1743,4 +1757,5 @@ IInternetSecurityManager *get_security_manager(void);
 
 extern HINSTANCE hInst;
 void create_console(HTMLInnerWindow *window, IWineMSHTMLConsole **ret);
+HRESULT create_crypto(HTMLInnerWindow *window, IWineMSHTMLCrypto **ret);
 HRESULT create_media_query_list(HTMLInnerWindow *window, BSTR media_query, IDispatch **ret);

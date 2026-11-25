@@ -659,6 +659,7 @@ static const CHAR ca1_install_exec_seq_dat[] = "Action\tCondition\tSequence\n"
                                                "embednull\t\t600\n"
                                                "maintest\tMAIN_TEST\t700\n"
                                                "testretval\tTEST_RETVAL\t710\n"
+                                               "testretvalfail\tTEST_RETVAL=259\t715\n"
                                                "process1\tTEST_PROCESS\t720\n"
                                                "process2\tTEST_PROCESS\t721\n"
                                                "process_deferred\tTEST_PROCESS\t722\n"
@@ -678,7 +679,8 @@ static const CHAR ca1_custom_action_dat[] = "Action\tType\tSource\tTarget\n"
                                              "process_deferred\t1025\tcustom.dll\tprocess2\n"
                                              "async1\t129\tcustom.dll\tasync1\n"
                                              "async2\t1\tcustom.dll\tasync2\n"
-                                             "testretval\t1\tcustom.dll\ttest_retval\n";
+                                             "testretval\t1\tcustom.dll\ttest_retval\n"
+                                             "testretvalfail\t19\t\taction should not run\n";
 
 static const CHAR ca1_test_seq_dat[] = "Action\tCondition\tSequence\n"
                                        "s72\tS255\tI2\n"
@@ -5198,9 +5200,11 @@ static void process_pending_renames(HKEY hkey)
             flags |= MOVEFILE_REPLACE_EXISTING;
             dst++;
         }
+        if (src[0] == '*' && src[1] == '1') src += 2; /* win11 */
         if (src[0] == '\\' && src[1] == '?' && src[2] == '?' && src[3] == '\\') src += 4;
         if (*dst)
         {
+            if (dst[0] == '*' && dst[1] == '1') dst += 2; /* win11 */
             if (dst[0] == '\\' && dst[1] == '?' && dst[2] == '?' && dst[3] == '\\') dst += 4;
             fileret = MoveFileExA(src, dst, flags);
             ok(fileret, "Failed to move file %s -> %s (%lu)\n", src, dst, GetLastError());

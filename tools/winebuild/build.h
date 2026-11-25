@@ -67,21 +67,10 @@ enum arg_type
 
 typedef struct
 {
-    int n_values;
-    unsigned int *values;
-} ORD_VARIABLE;
-
-typedef struct
-{
     int           nb_args;
     int           args_str_offset;
     enum arg_type args[MAX_ARGUMENTS];
 } ORD_FUNCTION;
-
-typedef struct
-{
-    unsigned short value;
-} ORD_ABS;
 
 typedef struct
 {
@@ -95,9 +84,9 @@ typedef struct
     char       *export_name;  /* name exported under for noname exports */
     union
     {
-        ORD_VARIABLE   var;
+        struct array   var;
+        unsigned short abs;
         ORD_FUNCTION   func;
-        ORD_ABS        abs;
     } u;
 } ORDDEF;
 
@@ -119,9 +108,7 @@ struct apiset_entry
 
 struct apiset
 {
-    unsigned int count;
-    unsigned int size;
-    struct apiset_entry *entries;
+    struct array entries;
     unsigned int str_pos;
     unsigned int str_size;
     char *strings;
@@ -151,19 +138,16 @@ typedef struct
     SPEC_TYPE        type;               /* type of dll (Win16/Win32) */
     int              stack_size;         /* exe stack size */
     int              heap_size;          /* exe heap size */
-    int              nb_entry_points;    /* number of used entry points */
-    int              alloc_entry_points; /* number of allocated entry points */
-    unsigned int     nb_resources;       /* number of resources */
     int              characteristics;    /* characteristics for the PE header */
     int              dll_characteristics;/* DLL characteristics for the PE header */
     int              subsystem;          /* subsystem id */
     int              subsystem_major;    /* subsystem version major number */
     int              subsystem_minor;    /* subsystem version minor number */
     int              unicode_app;        /* default to unicode entry point */
-    ORDDEF          *entry_points;       /* spec entry points */
+    struct array     entry_points;       /* spec entry points */
     struct exports   exports;            /* dll exports */
     struct exports   native_exports;     /* dll native exports */
-    struct resource *resources;          /* array of dll resources (format differs between Win16/Win32) */
+    struct array     resources;          /* array of dll resources (format differs between Win16/Win32) */
     struct apiset    apiset;             /* list of defined api sets */
 } DLLSPEC;
 
@@ -283,7 +267,6 @@ extern void dump_bytes( const void *buffer, unsigned int size );
 extern int remove_stdcall_decoration( char *name );
 extern void assemble_file( const char *src_file, const char *obj_file );
 extern DLLSPEC *alloc_dll_spec(void);
-extern void free_dll_spec( DLLSPEC *spec );
 extern char *make_c_identifier( const char *str );
 extern const char *get_abi_name( const ORDDEF *odp, const char *name );
 extern const char *get_link_name( const ORDDEF *odp );
@@ -291,7 +274,6 @@ extern int sort_func_list( ORDDEF **list, int count, int (*compare)(const void *
 extern unsigned int get_section_alignment(void);
 extern unsigned int get_args_size( const ORDDEF *odp );
 extern const char *asm_name( const char *func );
-extern const char *arm64_name( const char *func );
 extern const char *asm_globl( const char *func );
 extern const char *get_asm_ptr_keyword(void);
 extern const char *get_asm_string_keyword(void);
@@ -318,6 +300,7 @@ extern void output_imports( DLLSPEC *spec );
 extern void output_import_lib( DLLSPEC *spec, struct strarray files );
 extern void output_static_lib( const char *output_name, struct strarray files, int create );
 extern void output_exports( DLLSPEC *spec );
+extern void output_crt_sections(void);
 extern int load_res32_file( const char *name, DLLSPEC *spec );
 extern void output_resources( DLLSPEC *spec );
 extern void output_bin_resources( DLLSPEC *spec, unsigned int start_rva );

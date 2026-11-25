@@ -690,9 +690,11 @@ static HRESULT open_module16_icon(LPCWSTR szFileName, int nIndex, IStream **ppSt
     }
 
     dosHeader = (IMAGE_DOS_HEADER*)fileBytes;
-    if (sizeof(IMAGE_DOS_HEADER) >= fileSize || dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    if (sizeof(IMAGE_DOS_HEADER) >= fileSize ||
+        dosHeader->e_magic != IMAGE_DOS_SIGNATURE ||
+        (ULONG)dosHeader->e_lfanew >= RTL_IMAGE_MAX_DOS_HEADER)
     {
-        WINE_WARN("file too small for MZ header\n");
+        WINE_WARN("not a valid MZ file\n");
         goto end;
     }
 
@@ -1277,7 +1279,7 @@ static BOOL write_desktop_entry(const WCHAR *link, const WCHAR *location, const 
         heap_free( path );
     }
     fprintf(file, "wine \"%s\"", escape(path));
-    if (args) fprintf(file, " \"%s\"", escape(args) );
+    if (args && *args) fprintf(file, " \"%s\"", escape(args) );
     fputc( '\n', file );
     fprintf(file, "Type=Application\n");
     fprintf(file, "StartupNotify=true\n");
@@ -1546,23 +1548,20 @@ static HRESULT get_cmdline( IShellLinkW *sl, LPWSTR szPath, DWORD pathSize,
                 d=szPath;
                 while (*s)
                 {
-                    if ((*s==0x0009 || *s==0x0020) && !in_quotes)
+                    if (!in_quotes)
                     {
                         /* skip the remaining spaces */
-                        do {
+                        while (*s == '\t' || *s == ' ')
                             s++;
-                        } while (*s==0x0009 || *s==0x0020);
                         break;
                     }
-                    else if (*s==0x005c)
+                    else if (*s == '\\')
                     {
-                        /* '\\' */
                         *d++=*s++;
                         bcount++;
                     }
-                    else if (*s==0x0022)
+                    else if (*s == '"')
                     {
-                        /* '"' */
                         if ((bcount & 1)==0)
                         {
                             /* Preceded by an even number of '\', this is
@@ -1706,8 +1705,8 @@ static BOOL build_native_mime_types(struct list *mime_types)
     WCHAR *dirs, *dir, *dos_name, *ctx, *p;
     BOOL ret;
 
-    if (_wgetenv( L"XDG_DATA_DIRS" ))
-        dirs = xwcsdup( _wgetenv( L"XDG_DATA_DIRS" ));
+    if (_wgetenv( L"WINE_HOST_XDG_DATA_DIRS" ))
+        dirs = xwcsdup( _wgetenv( L"WINE_HOST_XDG_DATA_DIRS" ));
     else
         dirs = xwcsdup( L"/usr/local/share/:/usr/share/" );
 
@@ -2823,9 +2822,15 @@ static BOOL init_xdg(void)
     WCHAR *p;
     HRESULT hr = SHGetFolderPathW(NULL, CSIDL_DESKTOP, NULL, SHGFP_TYPE_CURRENT, xdg_desktop_dir);
 
+    if (!_wgetenv( L"WINE_HOST_XDG_CURRENT_DESKTOP" ))
+    {
+        WINE_WARN( "Skipping .desktop file creation, no XDG-compliant desktop environment detected.\n" );
+        return FALSE;
+    }
+
     if (FAILED(hr)) return FALSE;
 
-    if ((p = _wgetenv( L"XDG_CONFIG_HOME" )))
+    if ((p = _wgetenv( L"WINE_HOST_XDG_CONFIG_HOME" )))
         xdg_menu_dir = heap_wprintf( L"\\??\\unix%s/menus/applications-merged", p );
     else
         xdg_menu_dir = heap_wprintf( L"%s/.config/menus/applications-merged", _wgetenv(L"WINEHOMEDIR") );
@@ -2833,7 +2838,7 @@ static BOOL init_xdg(void)
     xdg_menu_dir[1] = '\\';  /* change \??\ to \\?\ */
     create_directories(xdg_menu_dir);
 
-    if ((p = _wgetenv( L"XDG_DATA_HOME" )))
+    if ((p = _wgetenv( L"WINE_HOST_XDG_DATA_HOME" )))
         xdg_data_dir = heap_wprintf( L"\\??\\unix%s", p );
     else
         xdg_data_dir = heap_wprintf( L"%s/.local/share", _wgetenv(L"WINEHOMEDIR") );

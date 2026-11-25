@@ -19,6 +19,10 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+%top{
+#include "config.h"
+}
+
 %{
 #define YY_NO_UNISTD_H
 #include "hlsl.h"
@@ -30,6 +34,8 @@
 static void update_location(struct hlsl_ctx *ctx, YYLTYPE *loc);
 
 static void apply_escape_sequences(char *str);
+
+static int resolve_identifier(struct hlsl_ctx *ctx, const char *text, struct hlsl_identifier *identifier);
 
 #define YY_USER_ACTION update_location(yyget_extra(yyscanner), yyget_lloc(yyscanner));
 
@@ -83,7 +89,6 @@ ComputeShader           {return KW_COMPUTESHADER;       }
 compile                 {return KW_COMPILE;             }
 CompileShader           {return KW_COMPILESHADER;       }
 const                   {return KW_CONST;               }
-ConstructGSWithSO       {return KW_CONSTRUCTGSWITHSO;   }
 continue                {return KW_CONTINUE;            }
 DepthStencilState       {return KW_DEPTHSTENCILSTATE;   }
 DepthStencilView        {return KW_DEPTHSTENCILVIEW;    }
@@ -214,18 +219,17 @@ while                   {return KW_WHILE;               }
 \|=                     {return OP_ORASSIGN;            }
 \^=                     {return OP_XORASSIGN;           }
 
-{IDENTIFIER}            {
+(::)?{IDENTIFIER}(::{IDENTIFIER})* {
                             struct hlsl_ctx *ctx = yyget_extra(yyscanner);
-
-                            yylval->name = hlsl_strdup(ctx, yytext);
                             if (hlsl_version_ge(ctx, 5, 1) && !strcmp(yytext, "ConstantBuffer"))
                                 return KW_CONSTANTBUFFER;
-                            else if (hlsl_get_var(ctx->cur_scope, yytext) || hlsl_get_function(ctx, yytext))
-                                return VAR_IDENTIFIER;
-                            else if (hlsl_get_type(ctx->cur_scope, yytext, true, true))
-                                return TYPE_IDENTIFIER;
-                            else
-                                return NEW_IDENTIFIER;
+                            return resolve_identifier(ctx, yytext, &yylval->identifier);
+                        }
+
+(::)?({IDENTIFIER}::)+|:: {
+                            struct hlsl_ctx *ctx = yyget_extra(yyscanner);
+                            hlsl_error(ctx, yylloc, VKD3D_SHADER_ERROR_HLSL_INVALID_SYNTAX,
+                                    "Expected an identifier after '::'.");
                         }
 
 {STRING}                {
@@ -239,15 +243,18 @@ while                   {return KW_WHILE;               }
                         }
 
 [0-9]*\.[0-9]+([eE][+-]?[0-9]+)?[h|H|f|F]? {
-                            yylval->floatval = atof(yytext);
+                            struct hlsl_ctx *ctx = yyget_extra(yyscanner);
+                            yylval->floatval = vkd3d_parse_float(yytext, ctx->c_locale);
                             return C_FLOAT;
                         }
 [0-9]+\.([eE][+-]?[0-9]+)?[h|H|f|F]? {
-                            yylval->floatval = atof(yytext);
+                            struct hlsl_ctx *ctx = yyget_extra(yyscanner);
+                            yylval->floatval = vkd3d_parse_float(yytext, ctx->c_locale);
                             return C_FLOAT;
                         }
 [0-9]+[eE][+-]?[0-9]+[h|H|f|F]? {
-                            yylval->floatval = atof(yytext);
+                            struct hlsl_ctx *ctx = yyget_extra(yyscanner);
+                            yylval->floatval = vkd3d_parse_float(yytext, ctx->c_locale);
                             return C_FLOAT;
                         }
 0x[0-9a-fA-F]+[lL]?     {
@@ -346,7 +353,7 @@ while                   {return KW_WHILE;               }
 <pp>{ANY}               {}
 
 {ANY}                   {
-                            return yytext[0];
+                            return (unsigned char)yytext[0];
                         }
 
 %%
@@ -483,4 +490,57 @@ static void apply_escape_sequences(char *str)
         ++i;
     }
     str[k++] = '\0';
+}
+
+static int resolve_identifier(struct hlsl_ctx *ctx, const char *text, struct hlsl_identifier *identifier)
+{
+    struct hlsl_scope *scope = NULL, *start;
+    bool global = !strncmp(text, "::", 2);
+    const char *name, *sep, *component;
+    int ret = NEW_IDENTIFIER;
+    char *qualified_name;
+
+    memset(identifier, 0, sizeof(*identifier));
+
+    if (!(identifier->qualified_name = hlsl_strdup(ctx, text)))
+        return 0;
+    sep = strrchr(identifier->qualified_name, ':');
+    identifier->name = sep ? sep + 1 : identifier->qualified_name;
+    name = identifier->name;
+    qualified_name = global ? identifier->qualified_name + 2 : identifier->qualified_name;
+
+    for (start = global ? ctx->globals : ctx->cur_scope; start; start = start->upper)
+    {
+        /* Look up the scope named by the qualifier, e.g. "A::B" in "A::B::x". */
+        scope = start;
+        component = qualified_name;
+        while (scope && (sep = strstr(component, "::")))
+        {
+            scope = hlsl_get_namespace_n(scope, component, sep - component);
+            component = sep + 2;
+        }
+        if (!scope)
+            continue;
+
+        /* FIXME: Support functions in non-global namespace scopes. */
+        if (hlsl_get_var_in_scope(scope, name)
+                || (scope == ctx->globals && hlsl_get_function(ctx, name)))
+        {
+            ret = VAR_IDENTIFIER;
+            break;
+        }
+        if (hlsl_get_type(scope, name, false, true))
+        {
+            ret = TYPE_IDENTIFIER;
+            break;
+        }
+        if (hlsl_get_namespace(scope, name))
+        {
+            ret = NAMESPACE_IDENTIFIER;
+            break;
+        }
+    }
+
+    identifier->scope = ret != NEW_IDENTIFIER ? scope : NULL;
+    return ret;
 }

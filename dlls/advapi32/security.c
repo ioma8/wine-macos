@@ -23,7 +23,6 @@
 #include <string.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winerror.h"
@@ -147,8 +146,8 @@ const char * debugstr_sid(PSID sid)
             psid->SubAuthority[3], psid->SubAuthority[4]);
     case 6:
         return wine_dbg_sprintf("S-%d-%d-%lu-%lu-%lu-%lu-%lu-%lu", psid->Revision, auth,
-            psid->SubAuthority[3], psid->SubAuthority[1], psid->SubAuthority[2],
-            psid->SubAuthority[0], psid->SubAuthority[4], psid->SubAuthority[5]);
+            psid->SubAuthority[0], psid->SubAuthority[1], psid->SubAuthority[2],
+            psid->SubAuthority[3], psid->SubAuthority[4], psid->SubAuthority[5]);
     case 7:
         return wine_dbg_sprintf("S-%d-%d-%lu-%lu-%lu-%lu-%lu-%lu-%lu", psid->Revision, auth,
             psid->SubAuthority[0], psid->SubAuthority[1], psid->SubAuthority[2],
@@ -277,7 +276,8 @@ GetEffectiveRightsFromAclW( PACL pacl, PTRUSTEEW pTrustee, PACCESS_MASK pAccessR
 {
     FIXME("%p %p %p - stub\n", pacl, pTrustee, pAccessRights);
 
-    return 1;
+    *pAccessRights = STANDARD_RIGHTS_ALL | SPECIFIC_RIGHTS_ALL;
+    return 0;
 }
 
 /*	##############################################
@@ -485,6 +485,12 @@ static const WCHAR * const WellKnownPrivNames[SE_MAX_WELL_KNOWN_PRIVILEGE + 1] =
     L"SeManageVolumePrivilege",
     L"SeImpersonatePrivilege",
     L"SeCreateGlobalPrivilege",
+    L"SeTrustedCredManAccessPrivilege",
+    L"SeRelabelPrivilege",
+    L"SeIncreaseWorkingSetPrivilege",
+    L"SeTimeZonePrivilege",
+    L"SeCreateSymbolicLinkPrivilege",
+    L"SeDelegateSessionUserImpersonatePrivilege",
 };
 
 const WCHAR *get_wellknown_privilege_name(const LUID *luid)
@@ -921,14 +927,19 @@ LookupAccountSidW(
                             ac = L"RAS and IAS Servers";
                             break;
                         case 1000:	/* first user account */
+                        {
+                            DWORD length;
+
                             size = UNLEN + 1;
                             account_name = malloc(size * sizeof(WCHAR));
-                            if (GetUserNameW(account_name, &size))
+                            length = GetEnvironmentVariableW( L"WINEUSERNAME", account_name, size );
+                            if (length && length < size)
                                 ac = account_name;
                             else
                                 dm = NULL;
 
                             break;
+                        }
                         default:
                             dm = NULL;
                             break;
@@ -3190,6 +3201,15 @@ BOOL WINAPI SaferSetLevelInformation(SAFER_LEVEL_HANDLE handle, SAFER_OBJECT_INF
 }
 
 /******************************************************************************
+ * SaferiIsExecutableFileType   [ADVAPI32.@]
+ */
+BOOL WINAPI SaferiIsExecutableFileType(const WCHAR *path, BOOLEAN shell_execute)
+{
+    FIXME("(%s, %u) stub\n", debugstr_w(path), shell_execute);
+    return FALSE;
+}
+
+/******************************************************************************
  * LookupSecurityDescriptorPartsA   [ADVAPI32.@]
  */
 DWORD WINAPI LookupSecurityDescriptorPartsA(TRUSTEEA *owner, TRUSTEEA *group, ULONG *access_count,
@@ -3211,4 +3231,15 @@ DWORD WINAPI LookupSecurityDescriptorPartsW(TRUSTEEW *owner, TRUSTEEW *group, UL
     FIXME("(%p %p %p %p %p %p %p) stub\n", owner, group, access_count,
           access_list, audit_count, audit_list, descriptor);
     return ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+/******************************************************************************
+ * AddConditionalAce [ADVAPI32.@]
+ */
+BOOL WINAPI AddConditionalAce(PACL acl, DWORD ace_revision, DWORD ace_flags, UCHAR ace_type,
+                               DWORD access_mask, PSID sid, PWCHAR condition, DWORD *length)
+{
+    FIXME("(%p %lx %lx %x %lx %p %s %p) stub\n", acl, ace_revision, ace_flags, ace_type,
+           access_mask, sid, debugstr_w(condition), length);
+    return FALSE;
 }

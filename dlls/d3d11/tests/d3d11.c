@@ -131,6 +131,7 @@ struct swapchain_desc
     unsigned int width, height;
     DXGI_SWAP_EFFECT swap_effect;
     DWORD flags;
+    DXGI_FORMAT format;
 };
 
 static ID3D10Blob *compile_shader(const char *source, size_t len, const char *profile)
@@ -1763,6 +1764,7 @@ static IDXGISwapChain *create_swapchain(ID3D11Device *device, HWND window,
         dxgi_desc.Windowed = swapchain_desc->windowed;
         dxgi_desc.SwapEffect = swapchain_desc->swap_effect;
         dxgi_desc.BufferCount = swapchain_desc->buffer_count;
+        dxgi_desc.BufferDesc.Format = swapchain_desc->format;
         if (swapchain_desc->width)
             dxgi_desc.BufferDesc.Width = swapchain_desc->width;
         if (swapchain_desc->height)
@@ -3066,7 +3068,7 @@ static void test_create_texture2d(void)
         {DXGI_FORMAT_R8G8B8A8_SNORM,          1, D3D11_BIND_RENDER_TARGET,    0, TRUE,  FALSE},
         {DXGI_FORMAT_R8G8B8A8_SINT,           1, D3D11_BIND_RENDER_TARGET,    0, TRUE,  FALSE},
         {DXGI_FORMAT_R8G8B8A8_UNORM,          1, D3D11_BIND_RENDER_TARGET,    D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX,
-                FALSE, TRUE},
+                FALSE, FALSE},
         {DXGI_FORMAT_D24_UNORM_S8_UINT,       1, D3D11_BIND_SHADER_RESOURCE,  0, FALSE, TRUE},
         {DXGI_FORMAT_D24_UNORM_S8_UINT,       1, D3D11_BIND_RENDER_TARGET,    0, FALSE, FALSE},
         {DXGI_FORMAT_D32_FLOAT,               1, D3D11_BIND_SHADER_RESOURCE,  0, FALSE, TRUE},
@@ -6393,6 +6395,7 @@ static void test_pipeline_statistics_query(void)
         /* AMD has nonzero GSInvocations on Windows. */
         ok(!data.GSPrimitives, "Got unexpected GSPrimitives count: %u.\n", (unsigned int)data.GSPrimitives);
         ok(data.CInvocations == 2, "Got unexpected CInvocations count: %u.\n", (unsigned int)data.CInvocations);
+        todo_wine_if (!data.CPrimitives)
         ok(data.CPrimitives == 2, "Got unexpected CPrimitives count: %u.\n", (unsigned int)data.CPrimitives);
         todo_wine_if (!damavand)
             ok(!data.PSInvocations, "Got unexpected PSInvocations count: %u.\n", (unsigned int)data.PSInvocations);
@@ -6415,6 +6418,7 @@ static void test_pipeline_statistics_query(void)
     /* AMD has nonzero GSInvocations on Windows. */
     ok(!data.GSPrimitives, "Got unexpected GSPrimitives count: %u.\n", (unsigned int)data.GSPrimitives);
     ok(data.CInvocations == 2, "Got unexpected CInvocations count: %u.\n", (unsigned int)data.CInvocations);
+    todo_wine_if (!data.CPrimitives)
     ok(data.CPrimitives == 2, "Got unexpected CPrimitives count: %u.\n", (unsigned int)data.CPrimitives);
     ok(data.PSInvocations >= 640 * 480, "Got unexpected PSInvocations count: %u.\n", (unsigned int)data.PSInvocations);
     ok(!data.HSInvocations, "Got unexpected HSInvocations count: %u.\n", (unsigned int)data.HSInvocations);
@@ -14681,6 +14685,99 @@ static void test_update_subresource(void)
     release_test_context(&test_context);
 }
 
+static void test_discard(void)
+{
+    static const DWORD colors[] = {0x11111111, 0x22222222, 0x33333333, 0x44444444};
+    D3D11_SUBRESOURCE_DATA resource_data[ARRAY_SIZE(colors)];
+    DWORD data[ARRAY_SIZE(colors)][4 * 4];
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
+    D3D11_TEXTURE2D_DESC texture_desc;
+    ID3D11DeviceContext1 *context1;
+    ID3D11DeviceContext *context;
+    struct resource_readback rb;
+    ID3D11RenderTargetView *rtv;
+    ID3D11Texture2D *texture;
+    ID3D11Buffer *buffer;
+    ID3D11Device *device;
+    unsigned int i, j;
+    ULONG refcount;
+    DWORD color;
+    HRESULT hr;
+
+    if (!(device = create_device(NULL)))
+    {
+        skip("Failed to create device.\n");
+        return;
+    }
+    ID3D11Device_GetImmediateContext(device, &context);
+    hr = ID3D11DeviceContext_QueryInterface(context, &IID_ID3D11DeviceContext1, (void **)&context1);
+    if (FAILED(hr))
+    {
+        win_skip("ID3D11DeviceContext1 is not supported.\n");
+        ID3D11DeviceContext_Release(context);
+        ID3D11Device_Release(device);
+        return;
+    }
+
+    /* A buffer without a structure byte stride. */
+    buffer = create_buffer(device, D3D11_BIND_VERTEX_BUFFER, 256, NULL);
+    ID3D11DeviceContext1_DiscardResource(context1, (ID3D11Resource *)buffer);
+    ID3D11DeviceContext1_Flush(context1);
+    ID3D11Buffer_Release(buffer);
+
+    /* Discarding a view of one array layer leaves the other sub-resources
+     * intact. Sub-resource i is mip level i % 2 of array layer i / 2. */
+    for (i = 0; i < ARRAY_SIZE(colors); ++i)
+    {
+        for (j = 0; j < ARRAY_SIZE(data[i]); ++j)
+            data[i][j] = colors[i];
+        resource_data[i].pSysMem = data[i];
+        resource_data[i].SysMemPitch = (i & 1 ? 2 : 4) * sizeof(DWORD);
+        resource_data[i].SysMemSlicePitch = 0;
+    }
+    texture_desc.Width = 4;
+    texture_desc.Height = 4;
+    texture_desc.MipLevels = 2;
+    texture_desc.ArraySize = 2;
+    texture_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.SampleDesc.Quality = 0;
+    texture_desc.Usage = D3D11_USAGE_DEFAULT;
+    texture_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    texture_desc.CPUAccessFlags = 0;
+    texture_desc.MiscFlags = 0;
+    hr = ID3D11Device_CreateTexture2D(device, &texture_desc, resource_data, &texture);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    rtv_desc.Format = texture_desc.Format;
+    rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+    rtv_desc.Texture2DArray.MipSlice = 0;
+    rtv_desc.Texture2DArray.FirstArraySlice = 1;
+    rtv_desc.Texture2DArray.ArraySize = 1;
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)texture, &rtv_desc, &rtv);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D11DeviceContext1_DiscardView(context1, (ID3D11View *)rtv);
+
+    for (i = 0; i < ARRAY_SIZE(colors); ++i)
+    {
+        /* Sub-resource 2 is the discarded one; its contents are undefined. */
+        if (i == 2)
+            continue;
+        get_texture_readback(texture, i, &rb);
+        color = get_readback_color(&rb, 0, 0, 0);
+        ok(color == colors[i], "Got unexpected color 0x%08lx for sub-resource %u.\n", color, i);
+        release_resource_readback(&rb);
+    }
+
+    ID3D11RenderTargetView_Release(rtv);
+    ID3D11Texture2D_Release(texture);
+    ID3D11DeviceContext1_Release(context1);
+    ID3D11DeviceContext_Release(context);
+    refcount = ID3D11Device_Release(device);
+    ok(!refcount, "Device has %lu references left.\n", refcount);
+}
+
 static void test_copy_subresource_region(void)
 {
     ID3D11Texture2D *dst_texture, *src_texture;
@@ -15866,8 +15963,13 @@ done:
 
 static void test_swapchain_formats(const D3D_FEATURE_LEVEL feature_level)
 {
+    static const struct vec4 clear_color = {0.2f, 0.3f, 0.5f, 1.0f};
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
     DXGI_SWAP_CHAIN_DESC swapchain_desc;
     struct device_desc device_desc;
+    ID3D11DeviceContext *context;
+    ID3D11Texture2D *backbuffer;
+    ID3D11RenderTargetView *rtv;
     IDXGISwapChain *swapchain;
     IDXGIDevice *dxgi_device;
     HRESULT hr, expected_hr;
@@ -15876,6 +15978,9 @@ static void test_swapchain_formats(const D3D_FEATURE_LEVEL feature_level)
     ID3D11Device *device;
     unsigned int i;
     ULONG refcount;
+    COLORREF color;
+    RECT rect;
+    HDC dc;
 
     swapchain_desc.BufferDesc.Width = 800;
     swapchain_desc.BufferDesc.Height = 600;
@@ -15887,10 +15992,14 @@ static void test_swapchain_formats(const D3D_FEATURE_LEVEL feature_level)
     swapchain_desc.SampleDesc.Quality = 0;
     swapchain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapchain_desc.BufferCount = 1;
-    swapchain_desc.OutputWindow = CreateWindowA("static", "d3d11_test", 0, 0, 0, 0, 0, 0, 0, 0, 0);
     swapchain_desc.Windowed = TRUE;
     swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
     swapchain_desc.Flags = 0;
+
+    SetRect(&rect, 0, 0, swapchain_desc.BufferDesc.Width, swapchain_desc.BufferDesc.Height);
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW | WS_VISIBLE, FALSE);
+    swapchain_desc.OutputWindow = CreateWindowA("static", "d3d11_test", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            0, 0, rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, NULL, NULL);
 
     device_desc.feature_level = &feature_level;
     device_desc.flags = 0;
@@ -15899,6 +16008,7 @@ static void test_swapchain_formats(const D3D_FEATURE_LEVEL feature_level)
         skip("Failed to create device.\n");
         return;
     }
+    ID3D11Device_GetImmediateContext(device, &context);
 
     hr = ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi_device);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
@@ -15946,10 +16056,74 @@ static void test_swapchain_formats(const D3D_FEATURE_LEVEL feature_level)
                     hr, expected_hr, format);
         if (FAILED(hr))
             continue;
+
+        hr = IDXGISwapChain_GetBuffer(swapchain, 0, &IID_ID3D11Texture2D, (void **)&backbuffer);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+        switch (format)
+        {
+            case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                break;
+            case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+                rtv_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                break;
+
+            default:
+                rtv_desc.Format = format;
+        }
+        rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        rtv_desc.Texture2D.MipSlice = 0;
+        hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)backbuffer,
+                &rtv_desc, &rtv);
+        /* DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM can't create RTVs */
+        if (SUCCEEDED(hr))
+        {
+            ID3D11DeviceContext_ClearRenderTargetView(context, rtv, (const float *)&clear_color);
+
+            IDXGISwapChain_Present(swapchain, 0, 0);
+
+            refcount = ID3D11RenderTargetView_Release(rtv);
+            ok(!refcount, "RTV has %lu references left.\n", refcount);
+
+            /* Reading from the Window is supposed to be more reliable at least on Windows, but
+             * fails on Wine. */
+            dc = GetDC(swapchain_desc.OutputWindow);
+            color = GetPixel(dc, 100, 100);
+            ReleaseDC(swapchain_desc.OutputWindow, dc);
+            if (!color || color == 0xffffff)
+            {
+                /* Try to read from the screen if reading the window returned obvious garbage. */
+                POINT p = {100, 100};
+                MapWindowPoints(swapchain_desc.OutputWindow, NULL, &p, 1);
+                dc = GetDC(NULL);
+                color = GetPixel(dc, p.x, p.y);
+                ReleaseDC(NULL, dc);
+            }
+            if (format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+            {
+                /* This is todo because Wine doesn't implement the sRGB conversion for float back
+                 * buffers. */
+                todo_wine ok(compare_color(color, 0x00bc957c, 1), "Got unexpected color %#lx, format %#x\n",
+                        color, format);
+            }
+            else
+            {
+                /* Wine's WGL fails to set some pixel formats but the error is not reported back to
+                 * the test. */
+                todo_wine_if(!color || color == 0xffffff)
+                        ok(compare_color(color, 0x00804d33, 1), "Got unexpected color %#lx, format %#x\n",
+                        color, format);
+            }
+        }
+
+        refcount = ID3D11Texture2D_Release(backbuffer);
+        ok(!refcount, "Backbuffer has %lu references left.\n", refcount);
         refcount = IDXGISwapChain_Release(swapchain);
         ok(!refcount, "Swapchain has %lu references left.\n", refcount);
     }
 
+    ID3D11DeviceContext_Release(context);
     refcount = ID3D11Device_Release(device);
     ok(!refcount, "Device has %lu references left.\n", refcount);
     refcount = IDXGIFactory_Release(factory);
@@ -15959,17 +16133,19 @@ static void test_swapchain_formats(const D3D_FEATURE_LEVEL feature_level)
 
 static void test_swapchain_views(void)
 {
+    ID3D11RenderTargetView *rtv_rgb, *rtv_srgb;
     D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
     struct d3d11_test_context test_context;
     D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
     ID3D11ShaderResourceView *srv;
     ID3D11DeviceContext *context;
-    ID3D11RenderTargetView *rtv;
     ID3D11Device *device;
     ULONG refcount;
     HRESULT hr;
 
     static const struct vec4 color = {0.2f, 0.3f, 0.5f, 1.0f};
+    static const RECT r1 = {15, 15, 16, 16};
+    static const RECT r2 = {5, 5, 6, 6};
 
     if (!init_test_context(&test_context, NULL))
         return;
@@ -15983,12 +16159,19 @@ static void test_swapchain_views(void)
     draw_color_quad(&test_context, &color);
     check_texture_color(test_context.backbuffer, 0xff7f4c33, 1);
 
-    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
     rtv_desc.Texture2D.MipSlice = 0;
-    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)test_context.backbuffer, &rtv_desc, &rtv);
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)test_context.backbuffer,
+            &rtv_desc, &rtv_rgb);
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
-    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
+
+    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)test_context.backbuffer,
+            &rtv_desc, &rtv_srgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv_srgb, NULL);
 
     refcount = get_refcount(test_context.backbuffer);
     ok(refcount == 1, "Got unexpected refcount %lu.\n", refcount);
@@ -16005,15 +16188,26 @@ static void test_swapchain_views(void)
     if (SUCCEEDED(hr))
         ID3D11ShaderResourceView_Release(srv);
 
-    ID3D11RenderTargetView_Release(rtv);
+    /* Clear with an RGB view, draw with sRGB view and make sure the clear color has no sRGB
+     * correction applied. */
+    ID3D11DeviceContext_ClearRenderTargetView(context, rtv_rgb, (const float *)&color);
+    set_viewport(context, 0.0f, 0.0f, 10.0f, 10.0f, 0.0f, 1.0f);
+    draw_color_quad(&test_context, &color);
+    check_texture_sub_resource_color(test_context.backbuffer, 0, &r1, 0xff7f4c33, 1);
+    check_texture_sub_resource_color(test_context.backbuffer, 0, &r2, 0xffbc957c, 1);
+
+    ID3D11RenderTargetView_Release(rtv_srgb);
+    ID3D11RenderTargetView_Release(rtv_rgb);
     release_test_context(&test_context);
 }
 
 static void test_swapchain_flip(void)
 {
     ID3D11Texture2D *backbuffer_0, *backbuffer_1, *backbuffer_2, *offscreen;
+    ID3D11RenderTargetView *backbuffer_0_rtv, *backbuffer_0_rtv_srgb;
+    ID3D11RenderTargetView *backbuffer_1_rtv_srgb, *offscreen_rtv;
     ID3D11ShaderResourceView *backbuffer_0_srv, *backbuffer_1_srv;
-    ID3D11RenderTargetView *backbuffer_0_rtv, *offscreen_rtv;
+    D3D11_RENDER_TARGET_VIEW_DESC rtv_desc;
     D3D11_TEXTURE2D_DESC texture_desc;
     ID3D11InputLayout *input_layout;
     ID3D11DeviceContext *context;
@@ -16092,6 +16286,7 @@ static void test_swapchain_flip(void)
     static const float red[] = {1.0f, 0.0f, 0.0f, 0.5f};
     static const float green[] = {0.0f, 1.0f, 0.0f, 0.5f};
     static const float blue[] = {0.0f, 0.0f, 1.0f, 0.5f};
+    static const float grey[] = {0.5, 0.5f, 0.5f, 0.5f};
 
     if (!(device = create_device(NULL)))
     {
@@ -16107,6 +16302,7 @@ static void test_swapchain_flip(void)
     desc.swap_effect = DXGI_SWAP_EFFECT_SEQUENTIAL;
     desc.windowed = TRUE;
     desc.flags = SWAPCHAIN_FLAG_SHADER_INPUT;
+    desc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapchain = create_swapchain(device, window, &desc);
 
     hr = IDXGISwapChain_GetBuffer(swapchain, 0, &IID_ID3D11Texture2D, (void **)&backbuffer_0);
@@ -16181,6 +16377,21 @@ static void test_swapchain_flip(void)
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
     ID3D11DeviceContext_PSSetShader(context, ps, NULL, 0);
 
+    /* Test SRGB rtv for UNORM swapchain common for Unity games for Win10 */
+    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    rtv_desc.Texture2D.MipSlice = 0;
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)backbuffer_0, &rtv_desc,
+            &backbuffer_0_rtv_srgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ID3D11DeviceContext_ClearRenderTargetView(context, backbuffer_0_rtv_srgb, grey);
+        color = get_texture_color(backbuffer_0, 320, 240); /* grey */
+        ok(compare_color(color, 0x80bcbcbc, 1), "Got unexpected srgb color 0x%08lx.\n", color);
+        ID3D11RenderTargetView_Release(backbuffer_0_rtv_srgb);
+    }
+
     ID3D11DeviceContext_ClearRenderTargetView(context, backbuffer_0_rtv, red);
 
     ID3D11DeviceContext_Draw(context, 4, 0);
@@ -16198,6 +16409,18 @@ static void test_swapchain_flip(void)
      * rendering finishes before the V-sync interval is over. I haven't found
      * any productive use for more than one buffer. */
     IDXGISwapChain_Present(swapchain, 0, 0);
+
+    /* Check RTVs created after present/rotate are properly handled/offset accordingly */
+    hr = ID3D11Device_CreateRenderTargetView(device, (ID3D11Resource *)backbuffer_0, &rtv_desc,
+            &backbuffer_1_rtv_srgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ID3D11DeviceContext_ClearRenderTargetView(context, backbuffer_1_rtv_srgb, grey);
+        color = get_texture_color(backbuffer_0, 320, 240); /* grey */
+        todo_wine ok(compare_color(color, 0x80bcbcbc, 1), "Got unexpected srgb color 0x%08lx.\n", color);
+        ID3D11RenderTargetView_Release(backbuffer_1_rtv_srgb);
+    }
 
     ID3D11DeviceContext_ClearRenderTargetView(context, backbuffer_0_rtv, green);
 
@@ -20682,6 +20905,7 @@ static void test_uint_shader_instructions(void)
         const struct shader *ps;
         unsigned int bits[4];
         struct uvec4 expected_result;
+        bool todo;
     }
     tests[] =
     {
@@ -20732,10 +20956,10 @@ static void test_uint_shader_instructions(void)
         {&ps_ibfe, {15, 15, 0xffff00ff}, {0xfffffffe, 0xfffffffe, 0xfffffffe, 0xfffffffe}},
         {&ps_ibfe, {16, 15, 0xffffffff}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}},
         {&ps_ibfe, {16, 15, 0x3fffffff}, {0x00007fff, 0x00007fff, 0x00007fff, 0x00007fff}},
-        {&ps_ibfe, {20, 15, 0xffffffff}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}},
-        {&ps_ibfe, {31, 31, 0xffffffff}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}},
-        {&ps_ibfe, {31, 31, 0x80000000}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}},
-        {&ps_ibfe, {31, 31, 0x7fffffff}, {0x00000000, 0x00000000, 0x00000000, 0x00000000}},
+        {&ps_ibfe, {20, 15, 0xffffffff}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}, .todo = true},
+        {&ps_ibfe, {31, 31, 0xffffffff}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}, .todo = true},
+        {&ps_ibfe, {31, 31, 0x80000000}, {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff}, .todo = true},
+        {&ps_ibfe, {31, 31, 0x7fffffff}, {0x00000000, 0x00000000, 0x00000000, 0x00000000}, .todo = true},
 
         {&ps_ibfe2, {16, 15, 0x3fffffff}, {0x00007fff, 0x00007fff, 0x00007fff, 0x00007fff}},
 
@@ -20819,16 +21043,21 @@ static void test_uint_shader_instructions(void)
         if (feature_level < tests[i].ps->required_feature_level)
             continue;
 
+        winetest_push_context("Test %u", i);
+
         hr = ID3D11Device_CreatePixelShader(device, tests[i].ps->code, tests[i].ps->size, NULL, &ps);
-        ok(hr == S_OK, "Test %u: Got unexpected hr %#lx.\n", i, hr);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
         ID3D11DeviceContext_PSSetShader(context, ps, NULL, 0);
 
         ID3D11DeviceContext_UpdateSubresource(context, (ID3D11Resource *)cb, 0, NULL, tests[i].bits, 0, 0);
 
         draw_quad(&test_context);
-        check_texture_uvec4(texture, &tests[i].expected_result);
+        todo_wine_if (tests[i].todo)
+            check_texture_uvec4(texture, &tests[i].expected_result);
 
         ID3D11PixelShader_Release(ps);
+
+        winetest_pop_context();
     }
 
     ID3D11Buffer_Release(cb);
@@ -21608,32 +21837,52 @@ static void test_fl9_draw(const D3D_FEATURE_LEVEL feature_level)
     release_test_context(&test_context);
 }
 
+static const D3D_FEATURE_LEVEL all_feature_levels[] =
+{
+    D3D_FEATURE_LEVEL_11_1,
+    D3D_FEATURE_LEVEL_11_0,
+    D3D_FEATURE_LEVEL_10_1,
+    D3D_FEATURE_LEVEL_10_0,
+    D3D_FEATURE_LEVEL_9_3,
+    D3D_FEATURE_LEVEL_9_2,
+    D3D_FEATURE_LEVEL_9_1
+};
+
 static void queue_for_each_feature_level_in_range(D3D_FEATURE_LEVEL begin,
         D3D_FEATURE_LEVEL end, void (*test_func)(const D3D_FEATURE_LEVEL fl))
 {
-    static const D3D_FEATURE_LEVEL feature_levels[] =
-    {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_1,
-        D3D_FEATURE_LEVEL_10_0,
-        D3D_FEATURE_LEVEL_9_3,
-        D3D_FEATURE_LEVEL_9_2,
-        D3D_FEATURE_LEVEL_9_1
-    };
     unsigned int i;
 
     assert(begin <= end);
-    for (i = 0; i < ARRAY_SIZE(feature_levels); ++i)
+    for (i = 0; i < ARRAY_SIZE(all_feature_levels); ++i)
     {
-        if (begin <= feature_levels[i] && feature_levels[i] <= end)
-            queue_test_fl(test_func, feature_levels[i]);
+        if (begin <= all_feature_levels[i] && all_feature_levels[i] <= end)
+            queue_test_fl(test_func, all_feature_levels[i]);
+    }
+}
+
+static void run_for_each_feature_level_in_range(D3D_FEATURE_LEVEL begin,
+        D3D_FEATURE_LEVEL end, void (*test_func)(const D3D_FEATURE_LEVEL fl))
+{
+    unsigned int i;
+
+    assert(begin <= end);
+    for (i = 0; i < ARRAY_SIZE(all_feature_levels); ++i)
+    {
+        if (begin <= all_feature_levels[i] && all_feature_levels[i] <= end)
+            test_func(all_feature_levels[i]);
     }
 }
 
 static void queue_for_each_feature_level(void (*test_func)(const D3D_FEATURE_LEVEL fl))
 {
     queue_for_each_feature_level_in_range(D3D_FEATURE_LEVEL_9_1,
+            D3D_FEATURE_LEVEL_11_1, test_func);
+}
+
+static void run_for_each_feature_level(void (*test_func)(const D3D_FEATURE_LEVEL fl))
+{
+    run_for_each_feature_level_in_range(D3D_FEATURE_LEVEL_9_1,
             D3D_FEATURE_LEVEL_11_1, test_func);
 }
 
@@ -28644,6 +28893,7 @@ static void test_depth_bias(void)
     swapchain_desc.buffer_count = 1;
     swapchain_desc.width = 200;
     swapchain_desc.height = 200;
+    swapchain_desc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapchain_desc.swap_effect = DXGI_SWAP_EFFECT_DISCARD;
     swapchain_desc.flags = 0;
     if (!init_test_context_ext(&test_context, NULL, &swapchain_desc))
@@ -29018,7 +29268,7 @@ static void test_fractional_viewports(void)
                 ok(compare_float(v->x, expected.x, 0) && compare_float(v->y, expected.y, 0),
                         "Got fragcoord {%.8e, %.8e}, expected {%.8e, %.8e} at (%u, %u), offset %.8e.\n",
                         v->x, v->y, expected.x, expected.y, x, y, viewport_offsets[i]);
-                ok(compare_float(v->z, expected.z, 2) && compare_float(v->w, expected.w, 2),
+                ok(compare_float(v->z, expected.z, 8) && compare_float(v->w, expected.w, 8),
                         "Got texcoord {%.8e, %.8e}, expected {%.8e, %.8e} at (%u, %u), offset %.8e.\n",
                         v->z, v->w, expected.z, expected.w, x, y, viewport_offsets[i]);
             }
@@ -29071,7 +29321,7 @@ static void test_negative_viewports(const D3D_FEATURE_LEVEL feature_level)
     SetRect(&rect, 0, 0, 639, 479);
     check_texture_sub_resource_color(test_context.backbuffer, 0, &rect, 0xff00ff00, 1);
     SetRect(&rect, 639, 479, 640, 480);
-    todo_wine_if(quirk)
+    todo_wine_if(!quirk && feature_level >= D3D_FEATURE_LEVEL_10_0)
     check_texture_sub_resource_color(test_context.backbuffer, 0, &rect, quirk ? 0xffffffff : 0xff00ff00, 1);
 
     set_viewport(context, -1.0f / 128.0f, -1.0 / 128.0f, 640.0f, 480.0f, 0.0f, 1.0f);
@@ -29080,7 +29330,7 @@ static void test_negative_viewports(const D3D_FEATURE_LEVEL feature_level)
     SetRect(&rect, 0, 0, 639, 479);
     check_texture_sub_resource_color(test_context.backbuffer, 0, &rect, 0xff00ff00, 1);
     SetRect(&rect, 639, 479, 640, 480);
-    todo_wine_if(quirk)
+    todo_wine_if(!quirk && feature_level >= D3D_FEATURE_LEVEL_10_0)
     check_texture_sub_resource_color(test_context.backbuffer, 0, &rect, quirk ? 0xffffffff : 0xff00ff00, 1);
 
     release_test_context(&test_context);
@@ -31468,8 +31718,6 @@ static void test_multisample_resolve(void)
 
         const struct vec4 *color;
         DWORD expected_color;
-
-        BOOL todo;
     }
     tests[] =
     {
@@ -31570,12 +31818,43 @@ static void test_multisample_resolve(void)
          DXGI_FORMAT_R8G8B8A8_TYPELESS,
          DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
          DXGI_FORMAT_R8G8B8A8_UNORM,
-         &green, 0xffbcffbc, TRUE},
+         &green, 0xffbcffbc},
         {DXGI_FORMAT_R8G8B8A8_TYPELESS,
          DXGI_FORMAT_R8G8B8A8_TYPELESS,
          DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
          DXGI_FORMAT_R8G8B8A8_UNORM,
-         &color, 0xffe2cdc0, TRUE},
+         &color, 0xffe2cdc0},
+
+        {DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         &green, 0xffbcffbc},
+        {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         &green, 0xffbcffbc},
+        {DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         &green, 0xffbcffbc},
+        {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         &green, 0xff80ff80},
+        {DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         &green, 0xff80ff80},
+        {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM,
+         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+         &green, 0xff80ff80},
     };
 
     if (!init_test_context(&test_context, NULL))
@@ -31619,7 +31898,7 @@ static void test_multisample_resolve(void)
 
         /* Found broken on AMD Radeon HD 6310 */
         if (!broken(is_amd_device(device) && tests[i].format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB))
-            todo_wine_if(tests[i].todo && !damavand) check_texture_color(texture, tests[i].expected_color, 2);
+            check_texture_color(texture, tests[i].expected_color, 2);
 
         ID3D11RenderTargetView_Release(rtv);
         ID3D11Texture2D_Release(ms_texture);
@@ -31948,6 +32227,7 @@ static void test_sample_shading(void)
     swapchain_desc.buffer_count = 1;
     swapchain_desc.width = 32;
     swapchain_desc.height = 32;
+    swapchain_desc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapchain_desc.swap_effect = DXGI_SWAP_EFFECT_DISCARD;
     swapchain_desc.flags = 0;
     if (!init_test_context_ext(&test_context, &feature_level, &swapchain_desc))
@@ -32423,6 +32703,7 @@ static void test_standard_pattern(void)
     swapchain_desc.buffer_count = 1;
     swapchain_desc.width = 32;
     swapchain_desc.height = 32;
+    swapchain_desc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
     swapchain_desc.swap_effect = DXGI_SWAP_EFFECT_DISCARD;
     swapchain_desc.flags = 0;
     if (!init_test_context_ext(&test_context, &feature_level, &swapchain_desc))
@@ -33553,6 +33834,27 @@ static void test_deferred_context_rendering(void)
     ok(color == 0xff00ff00, "Got unexpected colour %#08lx.\n", color);
 
     ID3D11CommandList_Release(list2);
+    ID3D11CommandList_Release(list1);
+    ID3D11DeviceContext_Release(deferred);
+
+    /* A NULL command list returns E_UNEXPECTED, but still drops the recorded commands. */
+
+    hr = ID3D11Device_CreateDeferredContext(device, 0, &deferred);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    clear_rtv(immediate, test_context.backbuffer_rtv, &white);
+    ID3D11DeviceContext_ClearRenderTargetView(deferred, test_context.backbuffer_rtv, green);
+
+    hr = ID3D11DeviceContext_FinishCommandList(deferred, FALSE, NULL);
+    ok(hr == E_UNEXPECTED, "Got unexpected hr %#lx.\n", hr);
+
+    hr = ID3D11DeviceContext_FinishCommandList(deferred, FALSE, &list1);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D11DeviceContext_ExecuteCommandList(immediate, list1, TRUE);
+    color = get_texture_color(test_context.backbuffer, 320, 240);
+    ok(color == 0xffffffff, "Got unexpected colour %#08lx.\n", color);
+
     ID3D11CommandList_Release(list1);
     ID3D11DeviceContext_Release(deferred);
 
@@ -35214,7 +35516,7 @@ static void test_shared_resource(D3D_FEATURE_LEVEL feature_level)
                     || broken(hr == E_OUTOFMEMORY) /* software device before Win8 */,
                     "got %#lx.\n", hr);
         else
-            todo_wine ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
+            ok(hr == E_INVALIDARG, "got %#lx.\n", hr);
         if (FAILED(hr))
             goto test_done;
 
@@ -36376,9 +36678,9 @@ static void test_nv12(void)
     static const float clear_values_float[4] = {100.0, 100.0, 100.0, 100.0};
 
     static const char cs_code[] =
-            "Texture2D<uint> luma : register(t0);\n"
-            "Texture2D<uint2> chroma : register(t1);\n"
-            "RWTexture2D<uint> check : register(u1);\n"
+            "Texture2D<float> luma : register(t0);\n"
+            "Texture2D<float2> chroma : register(t1);\n"
+            "RWTexture2D<float> check : register(u1);\n"
             "\n"
             "uint2 size;\n"
             "\n"
@@ -36420,23 +36722,23 @@ static void test_nv12(void)
     }
     tests[] =
     {
-        {640, 480, 10, 20, 4, 6},
-        {640, 480, 10, 20, 4, 7},
-        {640, 480, 10, 20, 5, 6},
-        {640, 480, 10, 20, 5, 7},
+        {20, 40, 10, 20, 4, 6},
+        {20, 40, 10, 20, 4, 7},
+        {20, 40, 10, 20, 5, 6},
+        {20, 40, 10, 20, 5, 7},
 
-        {640, 480, 10, 21, 4, 6},
-        {640, 480, 11, 20, 4, 6},
-        {640, 480, 11, 21, 4, 6},
+        {20, 40, 10, 21, 4, 6},
+        {20, 40, 11, 20, 4, 6},
+        {20, 40, 11, 21, 4, 6},
 
-        {640, 481, 10, 20, 4, 6},
-        {641, 480, 10, 20, 4, 6},
-        {641, 481, 10, 20, 4, 6},
-        {642, 480, 10, 20, 4, 6},
-        {642, 481, 10, 20, 4, 6},
-        {642, 482, 10, 20, 4, 6},
-        {644, 482, 10, 20, 4, 6},
-        {644, 484, 10, 20, 4, 6},
+        {20, 41, 10, 20, 4, 6},
+        {21, 40, 10, 20, 4, 6},
+        {21, 41, 10, 20, 4, 6},
+        {22, 40, 10, 20, 4, 6},
+        {22, 41, 10, 20, 4, 6},
+        {22, 42, 10, 20, 4, 6},
+        {24, 42, 10, 20, 4, 6},
+        {24, 44, 10, 20, 4, 6},
     };
 
     if (!init_test_context(&test_context, NULL))
@@ -36475,17 +36777,17 @@ static void test_nv12(void)
     for (test_idx = 0; test_idx < ARRAY_SIZE(tests); ++test_idx)
     {
         /* I need only two uints in the cbuffer, but the size must be a multiple of 16. */
-        ID3D11Texture2D *texture, *texture2, *check_texture, *staging_texture;
+        ID3D11Texture2D *texture, *texture2, *check_texture, *staging_texture, *staging_texture2;
         unsigned int i, j, image_size, broken_warp_pitch;
         D3D11_UNORDERED_ACCESS_VIEW_DESC uav_desc = {0};
         D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc = {0};
         D3D11_SUBRESOURCE_DATA subresource_data = {0};
         D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {0};
+        D3D11_MAPPED_SUBRESOURCE map_desc, map_desc2;
         char *content, *content2, *copy_source;
         ID3D11UnorderedAccessView *check_uav;
         ID3D11RenderTargetView *rtv1, *rtv2;
         ID3D11ShaderResourceView *srvs[2];
-        D3D11_MAPPED_SUBRESOURCE map_desc;
         D3D11_TEXTURE2D_DESC desc = {0};
         struct resource_readback rb;
         uint32_t cbuffer_data[4];
@@ -36556,7 +36858,7 @@ static void test_nv12(void)
         ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
         desc.Height += height / 2;
-        desc.Format = DXGI_FORMAT_R8_UINT;
+        desc.Format = DXGI_FORMAT_R8_UNORM;
         desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
 
         hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &check_texture);
@@ -36573,7 +36875,7 @@ static void test_nv12(void)
         hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srvs[0]);
         ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
 
-        srv_desc.Format = DXGI_FORMAT_R8_UINT;
+        srv_desc.Format = DXGI_FORMAT_R8_UNORM;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
         srv_desc.Texture2D.MostDetailedMip = 0;
         srv_desc.Texture2D.MipLevels = 1;
@@ -36581,12 +36883,12 @@ static void test_nv12(void)
         hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srvs[0]);
         ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-        srv_desc.Format = DXGI_FORMAT_R8G8_UINT;
+        srv_desc.Format = DXGI_FORMAT_R8G8_UNORM;
 
         hr = ID3D11Device_CreateShaderResourceView(device, (ID3D11Resource *)texture, &srv_desc, &srvs[1]);
         ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-        uav_desc.Format = DXGI_FORMAT_R8_UINT;
+        uav_desc.Format = DXGI_FORMAT_R8_UNORM;
         uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
         uav_desc.Texture2D.MipSlice = 0;
 
@@ -36708,13 +37010,15 @@ static void test_nv12(void)
         check_readback_data_u8_with_buffer(&rb, content, width, 0);
         release_resource_readback(&rb);
 
-        /* Staging upload, GPU blit, and staging download tests. */
+        /* Staging upload, GPU blit, staging download, and CPU blit tests. */
         desc.Height = height;
         desc.Format = DXGI_FORMAT_NV12;
         desc.BindFlags = 0;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
         desc.Usage = D3D11_USAGE_STAGING;
         hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &staging_texture);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = ID3D11Device_CreateTexture2D(device, &desc, NULL, &staging_texture2);
         ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
         hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture, 0,
@@ -36773,6 +37077,7 @@ static void test_nv12(void)
 
         ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)texture2, (ID3D11Resource *)staging_texture);
         ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)texture, (ID3D11Resource *)texture2);
+        ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)staging_texture2, (ID3D11Resource *)staging_texture);
 
         hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture, 0,
                 D3D11_MAP_WRITE, 0, &map_desc);
@@ -36797,6 +37102,8 @@ static void test_nv12(void)
         ID3D11DeviceContext_CopyResource(device_context, (ID3D11Resource *)texture2, (ID3D11Resource *)staging_texture);
         ID3D11DeviceContext_CopySubresourceRegion(device_context, (ID3D11Resource *)texture, 0,
                 copy_x, copy_y, 0, (ID3D11Resource *)texture2, 0, &box);
+        ID3D11DeviceContext_CopySubresourceRegion(device_context, (ID3D11Resource *)staging_texture2, 0,
+                copy_x, copy_y, 0, (ID3D11Resource *)staging_texture, 0, &box);
 
         ID3D11DeviceContext_ClearUnorderedAccessViewUint(device_context, check_uav, clear_values);
         ID3D11DeviceContext_CSSetShader(device_context, cs, NULL, 0);
@@ -36814,13 +37121,22 @@ static void test_nv12(void)
         hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture, 0,
                 D3D11_MAP_READ, 0, &map_desc);
         ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = ID3D11DeviceContext_Map(device_context, (ID3D11Resource *)staging_texture2, 0,
+                D3D11_MAP_READ, 0, &map_desc2);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
         for (i = 0; i < height; ++i)
         {
             for (j = 0; j < width; ++j)
             {
+                /* GPU blit... */
                 uint8_t value = ((uint8_t *)map_desc.pData)[i * map_desc.RowPitch + j];
                 uint8_t expect = content2[i * width + j];
+                ok(value == expect, "Got Y %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
+                if (value != expect)
+                    goto fail_match;
+                /* ...and CPU blit. */
+                value = ((uint8_t *)map_desc2.pData)[i * map_desc2.RowPitch + j];
                 ok(value == expect, "Got Y %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
                 if (value != expect)
                     goto fail_match;
@@ -36831,13 +37147,26 @@ static void test_nv12(void)
         {
             for (j = 0; j < width / 2; ++j)
             {
+                /* GPU blit... */
                 uint8_t value = ((uint8_t *)map_desc.pData)[map_desc.RowPitch * (height + i) + j * 2];
                 uint8_t expect = content2[width * (height + i) + j * 2];
                 ok(value == expect, "Got U %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
                 if (value != expect)
                     goto fail_match;
+                /* ...and CPU blit. */
+                value = ((uint8_t *)map_desc2.pData)[map_desc2.RowPitch * (height + i) + j * 2];
+                ok(value == expect, "Got U %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
+                if (value != expect)
+                    goto fail_match;
+
+                /* Now the V, GPU blit... */
                 value = ((uint8_t *)map_desc.pData)[map_desc.RowPitch * (height + i) + j * 2 + 1];
                 expect = content2[width * (height + i) + j * 2 + 1];
+                ok(value == expect, "Got V %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
+                if (value != expect)
+                    goto fail_match;
+                /* ...and CPU blit. */
+                value = ((uint8_t *)map_desc.pData)[map_desc.RowPitch * (height + i) + j * 2 + 1];
                 ok(value == expect, "Got V %02x, expected %02x at (%u, %u).\n", value, expect, i, j);
                 if (value != expect)
                     goto fail_match;
@@ -36846,6 +37175,7 @@ static void test_nv12(void)
 
 fail_match:
         ID3D11DeviceContext_Unmap(device_context, (ID3D11Resource *)staging_texture, 0);
+        ID3D11DeviceContext_Unmap(device_context, (ID3D11Resource *)staging_texture2, 0);
 
         ID3D11RenderTargetView_Release(rtv2);
         ID3D11RenderTargetView_Release(rtv1);
@@ -36853,6 +37183,7 @@ fail_match:
         ID3D11UnorderedAccessView_Release(check_uav);
         ID3D11ShaderResourceView_Release(srvs[1]);
         ID3D11ShaderResourceView_Release(srvs[0]);
+        ID3D11Texture2D_Release(staging_texture2);
         ID3D11Texture2D_Release(staging_texture);
         ID3D11Texture2D_Release(check_texture);
         ID3D11Texture2D_Release(texture2);
@@ -36890,6 +37221,7 @@ static void test_h264_decoder(void)
     D3D11_VIDEO_DECODER_CONFIG config = {0};
     D3D11_TEXTURE2D_DESC texture_desc = {0};
     struct d3d11_test_context test_context;
+    D3D11_MAPPED_SUBRESOURCE map_desc;
     DXVA_Slice_H264_Short *h264_slice;
     ID3D11VideoContext *video_context;
     DXVA_PicParams_H264 *h264_params;
@@ -36907,6 +37239,7 @@ static void test_h264_decoder(void)
 
     DXVA_PicParams_H264 h264_params_template =
     {
+        /* 320x240, the actual size of the frame. */
         .wFrameWidthInMbsMinus1 = 19,
         .wFrameHeightInMbsMinus1 = 14,
         .num_ref_frames = 4,
@@ -36956,9 +37289,11 @@ static void test_h264_decoder(void)
             &IID_ID3D11VideoContext, (void **)&video_context);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
+    /* The video is 320x240, but we create 480x320 here. Native will happily
+     * just copy this into the top left area. */
     desc.Guid = DXVA_ModeH264_VLD_NoFGT;
-    desc.SampleWidth = 320;
-    desc.SampleHeight = 240;
+    desc.SampleWidth = 480;
+    desc.SampleHeight = 320;
     desc.OutputFormat = DXGI_FORMAT_NV12;
 
     hr = ID3D11VideoDevice_GetVideoDecoderConfigCount(video_device, &desc, &count);
@@ -37036,8 +37371,8 @@ static void test_h264_decoder(void)
     }
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
 
-    texture_desc.Width = 320;
-    texture_desc.Height = 240;
+    texture_desc.Width = 480;
+    texture_desc.Height = 320;
     texture_desc.MipLevels = 1;
     texture_desc.ArraySize = ARRAY_SIZE(output_views);
     texture_desc.Format = DXGI_FORMAT_NV12;
@@ -37048,8 +37383,28 @@ static void test_h264_decoder(void)
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
     texture_desc.ArraySize = 1;
     texture_desc.BindFlags = 0;
+    texture_desc.Usage = D3D11_USAGE_STAGING;
+    texture_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
     hr = ID3D11Device_CreateTexture2D(test_context.device, &texture_desc, NULL, &readback_texture);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Fill the output texture with initial data to test whether parts outside
+     * the image size are modified. */
+
+    hr = ID3D11DeviceContext_Map(test_context.immediate_context,
+            (ID3D11Resource *)readback_texture, 0, D3D11_MAP_WRITE, 0, &map_desc);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    /* Y plane */
+    for (unsigned int y = 0; y < texture_desc.Height; ++y)
+        memset((char *)map_desc.pData + y * map_desc.RowPitch, 123, texture_desc.Width);
+    /* UV plane */
+    for (unsigned int y = 0; y < texture_desc.Height / 2; ++y)
+        memset((char *)map_desc.pData + (texture_desc.Height + y) * map_desc.RowPitch, 45, texture_desc.Width);
+    ID3D11DeviceContext_Unmap(test_context.immediate_context, (ID3D11Resource *)readback_texture, 0);
+    ID3D11DeviceContext_CopySubresourceRegion(test_context.immediate_context,
+            (ID3D11Resource *)output_texture, 0, 0, 0, 0, (ID3D11Resource *)readback_texture, 0, NULL);
+    ID3D11DeviceContext_CopySubresourceRegion(test_context.immediate_context,
+            (ID3D11Resource *)output_texture, 1, 0, 0, 0, (ID3D11Resource *)readback_texture, 0, NULL);
 
     for (unsigned int i = 0; i < ARRAY_SIZE(output_views); ++i)
     {
@@ -37077,7 +37432,7 @@ static void test_h264_decoder(void)
     extension.pPrivateOutputData = &h264_status;
     extension.PrivateOutputDataSize = sizeof(h264_status);
     hr = ID3D11VideoContext_DecoderExtension(video_context, decoder, &extension);
-    todo_wine ok(hr == E_FAIL /* AMD */ || hr == S_OK /* NVidia */, "Got hr %#lx.\n", hr);
+    ok(hr == E_FAIL /* AMD */ || hr == S_OK /* NVidia */, "Got hr %#lx.\n", hr);
     if (hr == S_OK)
     {
         DXVA_Status_H264 zero_status = {0};
@@ -37266,6 +37621,12 @@ static void test_h264_decoder(void)
     get_readback_nv12(&rb, 176, 136, &colour);
     ok(colour.y == 41 && colour.u == 240 && colour.v == 110,
             "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
+    /* Of course NVidia and AMD don't agree on what's done to areas outside of
+     * the picture. NVidia fills them with black; AMD leaves them alone. */
+    get_readback_nv12(&rb, 320, 240, &colour);
+    ok((colour.y == 16 && colour.u == 128 && colour.v == 128)
+            || (colour.y == 123 && colour.u == 45 && colour.v == 45),
+            "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
     release_resource_readback(&rb);
 
     ID3D11DeviceContext_CopySubresourceRegion(test_context.immediate_context,
@@ -37277,6 +37638,10 @@ static void test_h264_decoder(void)
     get_readback_nv12(&rb, 176, 136, &colour);
     ok(colour.y == 49 && colour.u == 109 && colour.v == 184,
             "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
+    get_readback_nv12(&rb, 320, 240, &colour);
+    ok((colour.y == 16 && colour.u == 128 && colour.v == 128)
+            || (colour.y == 123 && colour.u == 45 && colour.v == 45),
+            "Got (Y, U, V) values (%u, %u, %u).\n", colour.y, colour.u, colour.v);
     release_resource_readback(&rb);
 
     /* The status query is asynchronous and does not wait for any frames to be
@@ -37287,23 +37652,30 @@ static void test_h264_decoder(void)
     memset(&extension, 0, sizeof(extension));
     extension.Function = DXVA_STATUS_REPORTING_FUNCTION;
     extension.pPrivateOutputData = &h264_status;
+    extension.PrivateOutputDataSize = sizeof(h264_status) - 1;
+    hr = ID3D11VideoContext_DecoderExtension(video_context, decoder, &extension);
+    ok(hr == E_FAIL, "Got hr %#lx.\n", hr);
+
+    memset(&h264_status, 0xcc, sizeof(h264_status));
+    memset(&extension, 0, sizeof(extension));
+    extension.Function = DXVA_STATUS_REPORTING_FUNCTION;
+    extension.pPrivateInputData = (void *)0xdeadbeef;
+    extension.PrivateInputDataSize = 123;
+    extension.pPrivateOutputData = &h264_status;
     extension.PrivateOutputDataSize = sizeof(h264_status);
     hr = ID3D11VideoContext_DecoderExtension(video_context, decoder, &extension);
-    todo_wine ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    if (hr == S_OK)
-    {
-        ok(h264_status.StatusReportFeedbackNumber == 2, "Got number %u.\n", h264_status.StatusReportFeedbackNumber);
-        ok(h264_status.CurrPic.bPicEntry == 1, "Got index %#x.\n", h264_status.CurrPic.bPicEntry);
-        ok(!h264_status.field_pic_flag, "Got field pic flag %#x.\n", h264_status.field_pic_flag);
-        ok(h264_status.bDXVA_Func == DXVA_PICTURE_DECODING_FUNCTION, "Got function %#x.\n", h264_status.bDXVA_Func);
-        ok(h264_status.bBufType == (UCHAR)~0, "Got buffer type %#x.\n", h264_status.bBufType);
-        ok(!h264_status.bStatus, "Got status %#x.\n", h264_status.bStatus);
-        ok(!h264_status.bReserved8Bits, "Got reserved %#x.\n", h264_status.bReserved8Bits);
-        /* AMD reports that 1 macroblock was successfully decoded, which is
-         * obviously wrong.
-         * NVidia returns 0xffff, which is valid and means that no estimate was
-         * provided. */
-    }
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    ok(h264_status.StatusReportFeedbackNumber == 2, "Got number %u.\n", h264_status.StatusReportFeedbackNumber);
+    ok(h264_status.CurrPic.bPicEntry == 1, "Got index %#x.\n", h264_status.CurrPic.bPicEntry);
+    ok(!h264_status.field_pic_flag, "Got field pic flag %#x.\n", h264_status.field_pic_flag);
+    ok(h264_status.bDXVA_Func == DXVA_PICTURE_DECODING_FUNCTION, "Got function %#x.\n", h264_status.bDXVA_Func);
+    ok(h264_status.bBufType == (UCHAR)~0, "Got buffer type %#x.\n", h264_status.bBufType);
+    ok(!h264_status.bStatus, "Got status %#x.\n", h264_status.bStatus);
+    ok(!h264_status.bReserved8Bits, "Got reserved %#x.\n", h264_status.bReserved8Bits);
+    /* AMD reports that 1 macroblock was successfully decoded, which is
+     * obviously wrong.
+     * NVidia returns 0xffff, which is valid and means that no estimate was
+     * provided. */
 
     for (unsigned int i = 0; i < ARRAY_SIZE(output_views); ++i)
         ID3D11VideoDecoderOutputView_Release(output_views[i]);
@@ -37312,6 +37684,359 @@ static void test_h264_decoder(void)
     ID3D11VideoDecoder_Release(decoder);
     ID3D11VideoContext_Release(video_context);
     ID3D11VideoDevice_Release(video_device);
+    release_test_context(&test_context);
+}
+
+static void test_filter_minmax(void)
+{
+    ID3D11Resource *srv_resource, *rtv_resource;
+    D3D11_FEATURE_DATA_D3D11_OPTIONS1 options1;
+    struct d3d11_test_context test_context;
+    ID3D10Blob *bytecode, *vs_blob;
+    ID3D11ShaderResourceView *srv;
+    ID3D11DeviceContext *context;
+    struct resource_readback rb;
+    ID3D11RenderTargetView *rtv;
+    D3D11_SUBRESOURCE_DATA data;
+    ID3D11SamplerState *sampler;
+    ID3D11PixelShader *ps;
+    const struct vec4 *c;
+    ID3D11Device *device;
+    size_t i, j;
+    HRESULT hr;
+
+    static const struct resource_desc srv_resource_desc =
+    {
+        .dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D,
+        .width = 4,
+        .height = 4,
+        .depth_or_array_size = 1,
+        .level_count = 1,
+        .format = DXGI_FORMAT_R32G32B32A32_FLOAT,
+        .sample_desc.Count = 1,
+        .usage = D3D11_USAGE_DEFAULT,
+        .bind_flags = D3D11_BIND_SHADER_RESOURCE,
+    },
+    rtv_resource_desc =
+    {
+        .dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D,
+        .width = 64,
+        .height = 64,
+        .depth_or_array_size = 1,
+        .level_count = 1,
+        .format = DXGI_FORMAT_R32G32B32A32_FLOAT,
+        .sample_desc.Count = 1,
+        .usage = D3D11_USAGE_DEFAULT,
+        .bind_flags = D3D11_BIND_RENDER_TARGET,
+    };
+
+    static const struct vec4 srv_data[] =
+    {
+        {.00, .00, .00, 1.0}, {.25, .00, .00, 1.0}, {.50, .00, .00, 1.0}, {.75, .00, .00, 1.0},
+        {.00, .25, .00, 1.0}, {.25, .25, .00, 1.0}, {.50, .25, .00, 1.0}, {.75, .25, .00, 1.0},
+        {.00, .50, .00, 1.0}, {.25, .50, .00, 1.0}, {.50, .50, .00, 1.0}, {.75, .50, .00, 1.0},
+        {.00, .75, .00, 1.0}, {.25, .75, .00, 1.0}, {.50, .75, .00, 1.0}, {.75, .75, .00, 1.0},
+    };
+
+    static const struct expected
+    {
+        unsigned int x, y;
+        struct vec4 c;
+    }
+    avg_expected[] =
+    {
+        {36, 20, {.375, .125, 0, 1}},
+        {20, 36, {.125, .375, 0, 1}},
+        {36, 36, {.375, .375, 0, 1}},
+        {52, 36, {.625, .375, 0, 1}},
+        {36, 52, {.375, .625, 0, 1}},
+    },
+    minimum_expected[] =
+    {
+        {36, 20, {.25, .00, 0, 1}},
+        {20, 36, {.00, .25, 0, 1}},
+        {36, 36, {.25, .25, 0, 1}},
+        {52, 36, {.50, .25, 0, 1}},
+        {36, 52, {.25, .50, 0, 1}},
+    },
+    maximum_expected[] =
+    {
+        {36, 20, {.50, .25, 0, 1}},
+        {20, 36, {.25, .50, 0, 1}},
+        {36, 36, {.50, .50, 0, 1}},
+        {52, 36, {.75, .50, 0, 1}},
+        {36, 52, {.50, .75, 0, 1}},
+    };
+
+    static const struct
+    {
+        D3D11_FILTER filter;
+        const struct expected *expected;
+        size_t expected_count;
+    }
+    tests[] =
+    {
+        {D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,         avg_expected,     ARRAY_SIZE(avg_expected)},
+        {D3D11_FILTER_MINIMUM_MIN_MAG_LINEAR_MIP_POINT, minimum_expected, ARRAY_SIZE(minimum_expected)},
+        {D3D11_FILTER_MAXIMUM_MIN_MAG_LINEAR_MIP_POINT, maximum_expected, ARRAY_SIZE(maximum_expected)},
+    };
+
+    static const char vs_code[] =
+            "void main(float4 p : POSITION, out float2 t : TEXCOORD, out float4 position : SV_Position)\n"
+            "{\n"
+            "    t.x = (p.x + 1.0) / 2.0;\n"
+            "    t.y = (-p.y + 1.0) / 2.0;\n"
+            "    position = p;\n"
+            "}\n";
+    static const char ps_code[] =
+            "Texture2D t;\n"
+            "sampler s;\n"
+            "\n"
+            "float4 main(float2 p : TEXCOORD) : SV_Target\n"
+            "{\n"
+            "    return t.Sample(s, floor(p * 8.0) / 8.0);\n"
+            "}\n";
+
+    static const float white_color[] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+
+    device = test_context.device;
+    context = test_context.immediate_context;
+
+    if (FAILED(hr = ID3D11Device_CheckFeatureSupport(device, D3D11_FEATURE_D3D11_OPTIONS1,
+            &options1, sizeof(options1))) || !options1.MinMaxFiltering)
+    {
+        skip("Min/max reduction filtering is not supported.\n");
+        release_test_context(&test_context);
+        return;
+    }
+
+    vs_blob = compile_shader(vs_code, strlen(vs_code), "vs_4_0");
+
+    bytecode = compile_shader(ps_code, strlen(ps_code), "ps_4_0");
+    hr = ID3D11Device_CreatePixelShader(device, ID3D10Blob_GetBufferPointer(bytecode),
+            ID3D10Blob_GetBufferSize(bytecode), NULL, &ps);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ID3D10Blob_Release(bytecode);
+    ID3D11DeviceContext_PSSetShader(context, ps, NULL, 0);
+
+    data.pSysMem = srv_data;
+    data.SysMemPitch = srv_resource_desc.width * sizeof(*srv_data);
+    data.SysMemSlicePitch = srv_resource_desc.height * data.SysMemPitch;
+    hr = create_resource(device, &srv_resource_desc, &data, &srv_resource);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = ID3D11Device_CreateShaderResourceView(device, srv_resource, NULL, &srv);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ID3D11DeviceContext_PSSetShaderResources(context, 0, 1, &srv);
+
+    hr = create_resource(device, &rtv_resource_desc, NULL, &rtv_resource);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = ID3D11Device_CreateRenderTargetView(device, rtv_resource, NULL, &rtv);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    ID3D11DeviceContext_OMSetRenderTargets(context, 1, &rtv, NULL);
+    set_viewport(context, 0.0f, 0.0f, 64.0f, 64.0f, 0.0f, 1.0f);
+
+    for (i = 0; i < ARRAY_SIZE(tests); ++i)
+    {
+        const D3D11_SAMPLER_DESC sampler_desc =
+        {
+            .Filter = tests[i].filter,
+            .AddressU = D3D11_TEXTURE_ADDRESS_CLAMP,
+            .AddressV = D3D11_TEXTURE_ADDRESS_CLAMP,
+            .AddressW = D3D11_TEXTURE_ADDRESS_CLAMP,
+        };
+
+        winetest_push_context("Test %Iu", i);
+
+        ID3D11DeviceContext_ClearRenderTargetView(context, rtv, white_color);
+
+        hr = ID3D11Device_CreateSamplerState(device, &sampler_desc, &sampler);
+        ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+        ID3D11DeviceContext_PSSetSamplers(context, 0, 1, &sampler);
+        draw_quad_vs(&test_context, ID3D10Blob_GetBufferPointer(vs_blob), ID3D10Blob_GetBufferSize(vs_blob));
+        ID3D11SamplerState_Release(sampler);
+
+        get_resource_readback(rtv_resource, 0, &rb);
+        for (j = 0; j < tests[i].expected_count; ++j)
+        {
+            const struct expected *e = &tests[i].expected[j];
+
+            c = get_readback_vec4(&rb, e->x, e->y);
+            ok(compare_vec4(c, &e->c, 0), "Got {%.8e, %.8e, %.8e, %.8e} at %u, %u.\n",
+                    c->x, c->y, c->z, c->w, e->x, e->y);
+        }
+        release_resource_readback(&rb);
+
+        winetest_pop_context();
+    }
+
+    ID3D11RenderTargetView_Release(rtv);
+    ID3D11Resource_Release(rtv_resource);
+    ID3D11ShaderResourceView_Release(srv);
+    ID3D11Resource_Release(srv_resource);
+    ID3D11PixelShader_Release(ps);
+    ID3D10Blob_Release(vs_blob);
+    release_test_context(&test_context);
+}
+
+static void test_video_support(void)
+{
+    ID3D11VideoDevice *video_device;
+    IDXGIFactory4 *factory4;
+    IDXGIAdapter *adapter;
+    IDXGIFactory *factory;
+    ID3D11Device *device;
+    unsigned int count;
+    HRESULT hr;
+
+    static const D3D_DRIVER_TYPE driver_types[] =
+    {
+        D3D_DRIVER_TYPE_UNKNOWN,
+        D3D_DRIVER_TYPE_HARDWARE,
+        D3D_DRIVER_TYPE_REFERENCE,
+        D3D_DRIVER_TYPE_NULL,
+        D3D_DRIVER_TYPE_SOFTWARE,
+        D3D_DRIVER_TYPE_WARP
+    };
+
+    if (FAILED(hr = CreateDXGIFactory1(&IID_IDXGIFactory, (void **)&factory)))
+    {
+        trace("Failed to create IDXGIFactory, hr %#lx.\n", hr);
+        return;
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(driver_types); ++i)
+    {
+        winetest_push_context("driver_type %d", driver_types[i]);
+
+        /* WARP fails video support if created directly, but still allows it
+         * when created with a NULL adapter. */
+        hr = D3D11CreateDevice(NULL, driver_types[i], NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+        if (driver_types[i] == D3D_DRIVER_TYPE_HARDWARE)
+            ok(hr == S_OK, "Got %#lx.\n", hr);
+        else if (driver_types[i] == D3D_DRIVER_TYPE_UNKNOWN || driver_types[i] == D3D_DRIVER_TYPE_SOFTWARE)
+            todo_wine ok(hr == E_INVALIDARG, "Got %#lx.\n", hr);
+        else
+            todo_wine_if(driver_types[i] != D3D_DRIVER_TYPE_WARP || damavand)
+                ok(hr == DXGI_ERROR_UNSUPPORTED, "Got %#lx.\n", hr);
+        if (hr == S_OK)
+            ID3D11Device_Release(device);
+
+        for (unsigned int j = 0; IDXGIFactory_EnumAdapters(factory, j, &adapter) == S_OK; ++j)
+        {
+            winetest_push_context("adapter %u", j);
+
+            hr = D3D11CreateDevice(adapter, driver_types[i], NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+            if (driver_types[i] == D3D_DRIVER_TYPE_UNKNOWN)
+                ok(hr == S_OK || hr == DXGI_ERROR_UNSUPPORTED, "Got %#lx.\n", hr);
+            else
+                todo_wine ok(hr == E_INVALIDARG, "Got %#lx.\n", hr);
+            if (hr == S_OK)
+            {
+                hr = ID3D11Device_QueryInterface(device, &IID_ID3D11VideoDevice, (void **)&video_device);
+                ok(hr == S_OK, "Got %#lx.\n", hr);
+
+                count = ID3D11VideoDevice_GetVideoDecoderProfileCount(video_device);
+                ok(count > 0, "Got no decoder profiles.\n");
+
+                ID3D11Device_Release(device);
+            }
+
+            IDXGIAdapter_Release(adapter);
+            winetest_pop_context();
+        }
+
+        if (SUCCEEDED(hr = IDXGIFactory_QueryInterface(factory, &IID_IDXGIFactory4, (void **)&factory4)))
+        {
+            hr = IDXGIFactory4_EnumWarpAdapter(factory4, &IID_IDXGIAdapter, (void **)&adapter);
+            ok(hr == S_OK, "Got %#lx.\n", hr);
+
+            hr = D3D11CreateDevice(adapter, driver_types[i], NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0, D3D11_SDK_VERSION, &device, NULL, NULL);
+            if (driver_types[i] == D3D_DRIVER_TYPE_UNKNOWN)
+                todo_wine_if(damavand) ok(hr == DXGI_ERROR_UNSUPPORTED, "Got %#lx.\n", hr);
+            else
+                todo_wine ok(hr == E_INVALIDARG, "Got %#lx.\n", hr);
+            if (hr == S_OK)
+                ID3D11Device_Release(device);
+
+            IDXGIAdapter_Release(adapter);
+        }
+
+        winetest_pop_context();
+    }
+
+    IDXGIFactory_Release(factory);
+}
+
+static void test_srgb_copy(void)
+{
+    ID3D11Texture2D *src_rgb, *src_srgb, *dst_rgb, *dst_srgb;
+    struct d3d11_test_context test_context;
+    ID3D11DeviceContext* context;
+    D3D11_SUBRESOURCE_DATA data;
+    ID3D11Device* device;
+    HRESULT hr;
+
+    static const struct resource_desc rgb_desc =
+    {
+        .dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D,
+        .width = 1,
+        .height = 1,
+        .depth_or_array_size = 1,
+        .level_count = 1,
+        .format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .sample_desc.Count = 1,
+        .usage = D3D11_USAGE_DEFAULT,
+        .bind_flags = D3D11_BIND_SHADER_RESOURCE,
+    },
+    srgb_desc =
+    {
+        .dimension = D3D11_RESOURCE_DIMENSION_TEXTURE2D,
+        .width = 1,
+        .height = 1,
+        .depth_or_array_size = 1,
+        .level_count = 1,
+        .format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        .sample_desc.Count = 1,
+        .usage = D3D11_USAGE_DEFAULT,
+        .bind_flags = D3D11_BIND_SHADER_RESOURCE,
+    };
+    static const unsigned int init_data = 0x11223344;
+
+    if (!init_test_context(&test_context, NULL))
+        return;
+
+    device = test_context.device;
+    context = test_context.immediate_context;
+
+    data.pSysMem = &init_data;
+    data.SysMemPitch = rgb_desc.width * sizeof(init_data);
+    data.SysMemSlicePitch = rgb_desc.height * data.SysMemPitch;
+    hr = create_resource(device, &rgb_desc, &data, (ID3D11Resource **)&src_rgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = create_resource(device, &rgb_desc, NULL, (ID3D11Resource **)&dst_rgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = create_resource(device, &srgb_desc, &data, (ID3D11Resource **)&src_srgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = create_resource(device, &srgb_desc, NULL, (ID3D11Resource **)&dst_srgb);
+    ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
+
+    ID3D11DeviceContext_CopyResource(context, (ID3D11Resource *)dst_rgb, (ID3D11Resource *)src_rgb);
+    ID3D11DeviceContext_CopyResource(context, (ID3D11Resource *)dst_srgb, (ID3D11Resource *)src_rgb);
+    check_texture_color(dst_rgb, 0x11223344, 1);
+    check_texture_color(dst_srgb, 0x11223344, 1);
+    ID3D11DeviceContext_CopyResource(context, (ID3D11Resource*)dst_rgb, (ID3D11Resource*)src_srgb);
+    ID3D11DeviceContext_CopyResource(context, (ID3D11Resource*)dst_srgb, (ID3D11Resource*)src_srgb);
+    check_texture_color(dst_rgb, 0x11223344, 1);
+    check_texture_color(dst_srgb, 0x11223344, 1);
+
+    ID3D11Texture2D_Release(src_rgb);
+    ID3D11Texture2D_Release(dst_rgb);
+    ID3D11Texture2D_Release(src_srgb);
+    ID3D11Texture2D_Release(dst_srgb);
+
     release_test_context(&test_context);
 }
 
@@ -37404,12 +38129,12 @@ START_TEST(d3d11)
     queue_test(test_initial_texture_data);
     queue_test(test_update_subresource);
     queue_test(test_copy_subresource_region);
+    queue_test(test_discard);
     queue_test(test_copy_subresource_region_1d);
     queue_test(test_copy_subresource_region_3d);
     queue_test(test_resource_map);
     queue_for_each_feature_level(test_resource_access);
     queue_test(test_check_multisample_quality_levels);
-    queue_for_each_feature_level(test_swapchain_formats);
     queue_test(test_swapchain_views);
     queue_test(test_swapchain_flip);
     queue_test(test_clear_render_target_view_1d);
@@ -37522,8 +38247,13 @@ START_TEST(d3d11)
     queue_test(test_high_resource_count);
     queue_test(test_nv12);
     queue_test(test_h264_decoder);
+    queue_test(test_filter_minmax);
+    queue_test(test_video_support);
+    queue_test(test_srgb_copy);
 
     run_queued_tests();
+
+    run_for_each_feature_level(test_swapchain_formats);
 
     /* There should be no reason these tests can't be run in parallel with the
      * others, yet they randomly fail or crash when doing so.

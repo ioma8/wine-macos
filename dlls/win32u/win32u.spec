@@ -372,7 +372,7 @@
 @ stub -syscall NtGdiDdDDISharedPrimaryLockNotification
 @ stub -syscall NtGdiDdDDISharedPrimaryUnLockNotification
 @ stub -syscall NtGdiDdDDISignalSynchronizationObject
-@ stub -syscall NtGdiDdDDISignalSynchronizationObjectFromCpu
+@ stdcall -syscall NtGdiDdDDISignalSynchronizationObjectFromCpu(ptr)
 @ stub -syscall NtGdiDdDDISignalSynchronizationObjectFromGpu
 @ stub -syscall NtGdiDdDDISignalSynchronizationObjectFromGpu2
 @ stub -syscall NtGdiDdDDISubmitCommand
@@ -388,7 +388,7 @@
 @ stub -syscall NtGdiDdDDIUpdateOverlay
 @ stub -syscall NtGdiDdDDIWaitForIdle
 @ stub -syscall NtGdiDdDDIWaitForSynchronizationObject
-@ stub -syscall NtGdiDdDDIWaitForSynchronizationObjectFromCpu
+@ stdcall -syscall NtGdiDdDDIWaitForSynchronizationObjectFromCpu(ptr)
 @ stub -syscall NtGdiDdDDIWaitForSynchronizationObjectFromGpu
 @ stub -syscall NtGdiDdDDIWaitForVerticalBlankEvent
 @ stub -syscall NtGdiDdDDIWaitForVerticalBlankEvent2
@@ -874,7 +874,7 @@
 @ stdcall -syscall NtUserCreatePopupMenu()
 @ stub -syscall NtUserCreateSyntheticPointerDevice2
 @ stub -syscall NtUserCreateSystemThreads
-@ stdcall -syscall NtUserCreateWindowEx(long ptr ptr ptr long long long long long long long long ptr long long ptr long)
+@ stdcall -syscall NtUserCreateWindowEx(long ptr ptr ptr long long long long long ptr ptr ptr ptr long ptr ptr long)
 @ stub -syscall NtUserCreateWindowGroup
 @ stdcall -syscall NtUserCreateWindowStation(ptr long long long long long long)
 @ stub -syscall NtUserCsDdeUninitialize
@@ -1051,7 +1051,7 @@
 @ stub -syscall NtUserGetMenuIndex
 @ stdcall -syscall NtUserGetMenuItemRect(long long long ptr)
 @ stdcall -syscall NtUserGetMessage(ptr long long long)
-@ stub -syscall NtUserGetMessagePos
+@ stdcall -syscall NtUserGetMessagePos()
 @ stub -syscall NtUserGetMinuserIdForBaseWindow
 @ stub -syscall NtUserGetModernAppWindow
 @ stdcall -syscall NtUserGetMouseMovePointsEx(long ptr ptr long long)
@@ -1066,13 +1066,13 @@
 @ stub -syscall NtUserGetPointerDeviceInputSpace
 @ stub -syscall NtUserGetPointerDeviceOrientation
 @ stub -syscall NtUserGetPointerDeviceProperties
-@ stub -syscall NtUserGetPointerDeviceRects
+@ stdcall -syscall NtUserGetPointerDeviceRects(long ptr ptr)
 @ stub -syscall NtUserGetPointerDevices
 @ stub -syscall NtUserGetPointerFrameTimes
 @ stdcall -syscall NtUserGetPointerInfoList(long long long long long ptr ptr ptr)
 @ stub -syscall NtUserGetPointerInputTransform
 @ stub -syscall NtUserGetPointerProprietaryId
-@ stub -syscall NtUserGetPointerType
+@ stdcall -syscall NtUserGetPointerType(long ptr)
 @ stub -syscall NtUserGetPrecisionTouchPadConfiguration
 @ stdcall -syscall NtUserGetPriorityClipboardFormat(ptr long)
 @ stdcall -syscall NtUserGetProcessDefaultLayout(ptr)
@@ -1150,7 +1150,7 @@
 @ stub -syscall NtUserInitializeInputDeviceInjection
 @ stub -syscall NtUserInitializePointerDeviceInjection
 @ stub -syscall NtUserInitializePointerDeviceInjectionEx
-@ stub -syscall NtUserInitializeTouchInjection
+@ stdcall -syscall NtUserInitializeTouchInjection(long long)
 @ stub -syscall NtUserInjectDeviceInput
 @ stub -syscall NtUserInjectGenericHidInput
 @ stub -syscall NtUserInjectGesture
@@ -1207,7 +1207,7 @@
 @ stdcall -syscall NtUserMessageCall(long long long long long long long)
 @ stub -syscall NtUserMinInitialize
 @ stub -syscall NtUserMinMaximize
-@ stub -syscall NtUserModifyUserStartupInfoFlags
+@ stdcall -syscall NtUserModifyUserStartupInfoFlags(long long)
 @ stub -syscall NtUserModifyWindowTouchCapability
 @ stdcall -syscall NtUserMoveWindow(long long long long long long)
 @ stdcall -syscall NtUserMsgWaitForMultipleObjectsEx(long ptr long long long)
@@ -1388,7 +1388,7 @@
 @ stdcall -syscall NtUserSetMenuContextHelpId(long long)
 @ stdcall -syscall NtUserSetMenuDefaultItem(long long long)
 @ stub -syscall NtUserSetMenuFlagRtoL
-@ stub -syscall NtUserSetMessageExtraInfo
+@ stdcall -syscall NtUserSetMessageExtraInfo(long)
 @ stub -syscall NtUserSetMirrorRendering
 @ stub -syscall NtUserSetModernAppWindow
 @ stub -syscall NtUserSetMonitorWorkArea
@@ -1439,7 +1439,7 @@
 @ stub -syscall NtUserSetWindowCompositionTransition
 @ stdcall -syscall NtUserSetWindowContextHelpId(long long)
 @ stub -syscall NtUserSetWindowDisplayAffinity
-@ stub -syscall NtUserSetWindowFNID
+@ stdcall -syscall NtUserSetWindowFNID(long long)
 @ stub -syscall NtUserSetWindowFeedbackSetting
 @ stub -syscall NtUserSetWindowGroup
 @ stdcall -syscall NtUserSetWindowLong(long long long long)

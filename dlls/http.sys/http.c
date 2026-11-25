@@ -21,7 +21,6 @@
 #include <assert.h>
 #include <stdbool.h>
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "wine/http.h"
 #include "winternl.h"
 #include "ddk/wdm.h"
@@ -251,7 +250,7 @@ static HTTP_HEADER_ID parse_header_name(const char *header, int len)
 
     for (i = 0; i < ARRAY_SIZE(headers); ++i)
     {
-        if (!strncmp(header, headers[i], len))
+        if (!strnicmp(header, headers[i], len))
             return i;
     }
     return HttpHeaderRequestMaximum;
@@ -385,7 +384,7 @@ static BOOL host_matches(const struct url *url, const char *conn_host)
     if (!url->url)
         return FALSE;
 
-    if (url->url[7] == '+')
+    if (url->url[7] == '+' || url->url[7] == '*')
     {
         const char *queue_port = strchr(url->url + 7, ':');
         host_len = strchr(queue_port, '/') - queue_port - 1;
@@ -521,15 +520,15 @@ static int parse_request(struct connection *conn)
 
         TRACE("Got %s header.\n", debugstr_an(name, len));
 
-        if (!strncmp(name, "Host", len))
+        if (!strnicmp(name, "Host", len))
             conn->host = p;
-        else if (!strncmp(name, "Content-Length", len))
+        else if (!strnicmp(name, "Content-Length", len))
         {
             conn->content_len = parse_number(p, &q, end);
             if (q >= end) return 0;
             if (q == p) return -1;
         }
-        else if (!strncmp(name, "Transfer-Encoding", len))
+        else if (!strnicmp(name, "Transfer-Encoding", len))
             FIXME("Unhandled Transfer-Encoding header.\n");
         while (p < end && (isprint(*p) || *p == '\t')) ++p;
         if ((ret = compare_exact(p, "\r\n", end)) <= 0) return ret;
@@ -685,7 +684,7 @@ static DWORD WINAPI request_thread_proc(void *arg)
 
     TRACE("Starting request thread.\n");
 
-    while (!WaitForSingleObject(request_event, INFINITE))
+    while (!thread_stop && !WaitForSingleObject(request_event, INFINITE) && !thread_stop)
     {
         EnterCriticalSection(&http_cs);
 

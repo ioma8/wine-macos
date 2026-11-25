@@ -326,6 +326,29 @@ void release_dc_ptr( DC *dc )
     if (ref) dc->thread = GetCurrentThreadId();  /* we still own it */
 }
 
+BOOL is_dc_display( HDC hdc )
+{
+    int ret;
+    DC *dc;
+
+    if (!(dc = get_dc_ptr( hdc ))) return FALSE;
+    ret = dc->is_display;
+    release_dc_ptr( dc );
+
+    return ret;
+}
+
+int get_dc_pixel_format( HDC hdc )
+{
+    int ret;
+    DC *dc;
+
+    if (!(dc = get_dc_ptr( hdc ))) return -1;
+    ret = dc->pixel_format;
+    release_dc_ptr( dc );
+
+    return ret;
+}
 
 static void set_bk_color( DC *dc, COLORREF color )
 {
@@ -903,7 +926,7 @@ BOOL WINAPI NtGdiGetAndSetDCDword( HDC hdc, UINT method, DWORD value, DWORD *pre
 {
     PHYSDEV physdev;
     BOOL ret = TRUE;
-    DWORD prev;
+    DWORD prev = 0;
     DC *dc;
 
     if (!(dc = get_dc_ptr( hdc ))) return 0;
@@ -1026,6 +1049,10 @@ BOOL WINAPI NtGdiGetDCDword( HDC hdc, UINT method, DWORD *result )
 
     case NtGdiIsMemDC:
         *result = get_gdi_object_type( hdc ) == NTGDI_OBJ_MEMDC;
+        break;
+
+    case NtGdiHasOpenGL:
+        *result = get_gdi_object_type( hdc ) == NTGDI_OBJ_MEMDC || dc->is_display;
         break;
 
     default:
@@ -1273,9 +1300,10 @@ BOOL WINAPI NtGdiGetDeviceGammaRamp( HDC hdc, void *ptr )
         if (get_gdi_object_type( hdc ) != NTGDI_OBJ_MEMDC)
         {
             PHYSDEV physdev = GET_DC_PHYSDEV( dc, pGetDeviceGammaRamp );
-            ret = physdev->funcs->pGetDeviceGammaRamp( physdev, ptr );
+            ret = emulate_modeset ? -1 : physdev->funcs->pGetDeviceGammaRamp( physdev, ptr );
+            if (ret == -1) ret = get_global_gamma_ramp( ptr );
         }
-        else RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+        if (!ret) RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
 	release_dc_ptr( dc );
     }
     return ret;
@@ -1373,11 +1401,10 @@ BOOL WINAPI NtGdiSetDeviceGammaRamp( HDC hdc, void *ptr )
         if (get_gdi_object_type( hdc ) != NTGDI_OBJ_MEMDC)
         {
             PHYSDEV physdev = GET_DC_PHYSDEV( dc, pSetDeviceGammaRamp );
-
-            if (check_gamma_ramps(ptr))
-                ret = physdev->funcs->pSetDeviceGammaRamp( physdev, ptr );
+            if (check_gamma_ramps(ptr)) ret = emulate_modeset ? -1 : physdev->funcs->pSetDeviceGammaRamp( physdev, ptr );
+            if (ret == -1) ret = set_global_gamma_ramp( ptr );
         }
-        else RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
+        if (!ret) RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
 	release_dc_ptr( dc );
     }
     return ret;

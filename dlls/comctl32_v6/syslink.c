@@ -1167,9 +1167,9 @@ static VOID SYSLINK_Render (const SYSLINK_INFO *infoPtr, HDC hdc, PRECT pRect)
     rc.right -= SL_RIGHTMARGIN;
     rc.bottom -= SL_BOTTOMMARGIN;
 
-    if(rc.right - SL_LEFTMARGIN < 0)
+    if(rc.right - SL_LEFTMARGIN <= 0)
         rc.right = MAXLONG;
-    if (rc.bottom - SL_TOPMARGIN < 0)
+    if (rc.bottom - SL_TOPMARGIN <= 0)
         rc.bottom = MAXLONG;
     
     hOldFont = SelectObject(hdc, infoPtr->Font);
@@ -1227,14 +1227,9 @@ static VOID SYSLINK_Render (const SYSLINK_INFO *infoPtr, HDC hdc, PRECT pRect)
                     SkipChars++;
                     n--;
                 }
-                while(n > 0 && (*tx) == infoPtr->BreakChar)
-                {
-                    tx++;
-                    SkipChars++;
-                    n--;
-                }
             }
 
+            szDim.cx = szDim.cy = 0;
             if((n == 0 && SkipChars != 0) ||
                GetTextExtentExPointW(hdc, tx, n, rc.right - x, &nFit, NULL, &szDim))
             {
@@ -2327,15 +2322,4 @@ VOID SYSLINK_Register (void)
     wndClass.lpszClassName = WC_LINK;
 
     RegisterClassW (&wndClass);
-}
-
-
-/***********************************************************************
- * SYSLINK_Unregister [Internal]
- *
- * Unregisters the SysLink window class.
- */
-VOID SYSLINK_Unregister (void)
-{
-    UnregisterClassW (WC_LINK, NULL);
 }

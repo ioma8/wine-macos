@@ -27,6 +27,7 @@
 #include "setjmp.h"
 #include "wine/test.h"
 
+static NTSTATUS (WINAPI *pNtAlertMultipleThreadByThreadId)( HANDLE *, ULONG, void *, void * );
 static NTSTATUS (WINAPI *pNtAlertThreadByThreadId)( HANDLE );
 static NTSTATUS (WINAPI *pNtClose)( HANDLE );
 static NTSTATUS (WINAPI *pNtCreateEvent) ( PHANDLE, ACCESS_MASK, const OBJECT_ATTRIBUTES *, EVENT_TYPE, BOOLEAN);
@@ -43,7 +44,7 @@ static NTSTATUS (WINAPI *pNtQuerySemaphore)( HANDLE, SEMAPHORE_INFORMATION_CLASS
 static NTSTATUS (WINAPI *pNtQuerySystemTime)( LARGE_INTEGER * );
 static NTSTATUS (WINAPI *pNtReleaseKeyedEvent)( HANDLE, const void *, BOOLEAN, const LARGE_INTEGER * );
 static NTSTATUS (WINAPI *pNtReleaseMutant)( HANDLE, LONG * );
-static NTSTATUS (WINAPI *pNtReleaseSemaphore)( HANDLE, ULONG, ULONG * );
+static NTSTATUS (WINAPI *pNtReleaseSemaphore)( HANDLE, LONG, ULONG * );
 static NTSTATUS (WINAPI *pNtResetEvent)( HANDLE, LONG * );
 static NTSTATUS (WINAPI *pNtSetEvent)( HANDLE, LONG * );
 static NTSTATUS (WINAPI *pNtSetEventBoostPriority)( HANDLE );
@@ -512,6 +513,16 @@ static void test_semaphore(void)
     ok( info.MaximumCount == 2, "expected 2, got %ld\n", info.MaximumCount );
 
     prev = 0xdeadbeef;
+    status = pNtReleaseSemaphore(semaphore, -1, &prev);
+    ok( status == STATUS_INVALID_PARAMETER, "NtReleaseSemaphore failed %08lx\n", status );
+    ok( prev == 0xdeadbeef, "NtReleaseSemaphore failed, expected 0xdeadbeef, got %ld\n", prev );
+
+    prev = 0xdeadbeef;
+    status = pNtReleaseSemaphore(semaphore, 0, &prev);
+    ok( status == STATUS_INVALID_PARAMETER, "NtReleaseSemaphore failed %08lx\n", status );
+    ok( prev == 0xdeadbeef, "NtReleaseSemaphore failed, expected 0xdeadbeef, got %ld\n", prev );
+
+    prev = 0xdeadbeef;
     status = pNtReleaseSemaphore(semaphore, 3, &prev);
     ok( status == STATUS_SEMAPHORE_LIMIT_EXCEEDED, "NtReleaseSemaphore failed %08lx\n", status );
     ok( prev == 0xdeadbeef, "NtReleaseSemaphore failed, expected 0xdeadbeef, got %ld\n", prev );
@@ -780,12 +791,22 @@ static DWORD WINAPI tid_alert_thread( void *arg )
     return 0;
 }
 
+static DWORD WINAPI tid_wait_alert_thread( void *arg )
+{
+    NTSTATUS ret;
+
+    ret = pNtWaitForAlertByThreadId( (void *)0x123, NULL );
+    ok(ret == STATUS_ALERTED, "got %#lx\n", ret);
+    return 0;
+}
+
 static void test_tid_alert( char **argv )
 {
     LARGE_INTEGER timeout = {{0}};
     char cmdline[MAX_PATH];
     STARTUPINFOA si = {0};
     PROCESS_INFORMATION pi;
+    HANDLE tids[2];
     HANDLE thread;
     NTSTATUS ret;
     DWORD tid;
@@ -846,6 +867,43 @@ static void test_tid_alert( char **argv )
     ok(!WaitForSingleObject( pi.hProcess, 1000 ), "wait failed\n");
     CloseHandle( pi.hProcess );
     CloseHandle( pi.hThread );
+
+    if (!pNtAlertMultipleThreadByThreadId)
+    {
+        win_skip( "NtAlertMultipleThreadByThreadId is not avaliable.\n" );
+        return;
+    }
+
+    timeout.QuadPart = 0;
+    ret = pNtAlertMultipleThreadByThreadId( NULL, 0, NULL, NULL );
+    ok( !ret, "got %#lx.\n", ret );
+    ret = pNtAlertMultipleThreadByThreadId( NULL, 1, NULL, NULL );
+    ok( ret == STATUS_ACCESS_VIOLATION, "got %#lx.\n", ret );
+
+    ret = pNtWaitForAlertByThreadId( (HANDLE)(ULONG_PTR)GetCurrentThreadId(), &timeout );
+    ok(ret == STATUS_TIMEOUT, "got %#lx\n", ret);
+    tids[0] = (HANDLE)(ULONG_PTR)GetCurrentThreadId();
+    tids[1] = (HANDLE)0xdeadbeef;
+    ret = pNtAlertMultipleThreadByThreadId( tids, 2, NULL, NULL );
+    ok( ret == STATUS_INVALID_CID, "got %#lx.\n", ret );
+    ret = pNtWaitForAlertByThreadId( (HANDLE)(ULONG_PTR)GetCurrentThreadId(), &timeout );
+    ok(ret == STATUS_TIMEOUT, "got %#lx\n", ret);
+    tids[1] = tids[0];
+    ret = pNtAlertMultipleThreadByThreadId( tids, 2, NULL, NULL );
+    ok( !ret, "got %#lx.\n", ret );
+    ret = pNtWaitForAlertByThreadId( (HANDLE)(ULONG_PTR)GetCurrentThreadId(), &timeout );
+    ok(ret == STATUS_ALERTED, "got %#lx\n", ret);
+    ret = pNtWaitForAlertByThreadId( (HANDLE)(ULONG_PTR)GetCurrentThreadId(), &timeout );
+    ok(ret == STATUS_TIMEOUT, "got %#lx\n", ret);
+
+    thread = CreateThread( NULL, 0, tid_wait_alert_thread, (HANDLE)(DWORD_PTR)GetCurrentThreadId(), 0, &tid );
+    tids[1] = (HANDLE)(ULONG_PTR)tid;
+    ret = pNtAlertMultipleThreadByThreadId( tids, 2, NULL, NULL );
+    ok( !ret, "got %#lx.\n", ret );
+    ret = pNtWaitForAlertByThreadId( (HANDLE)(ULONG_PTR)GetCurrentThreadId(), &timeout );
+    ok(ret == STATUS_ALERTED, "got %#lx\n", ret);
+    WaitForSingleObject( thread, INFINITE );
+    CloseHandle( thread );
 }
 
 struct test_completion_port_scheduling_param
@@ -1157,17 +1215,22 @@ struct test_barrier_thread_param
     BOOL wait_skipped;
     volatile LONG *count;
     volatile LONG *true_ret_count;
+    unsigned int iter_count;
 };
 
 static DWORD WINAPI test_barrier_thread(void *param)
 {
     struct test_barrier_thread_param *p = param;
+    unsigned int i;
 
     InterlockedIncrement( p->count );
-    if (pRtlBarrier( p->barrier, p->flags ))
-        InterlockedIncrement( p->true_ret_count );
+    for (i = 0; i < p->iter_count; ++i)
+    {
+        if (pRtlBarrier( p->barrier, p->flags ))
+            InterlockedIncrement( p->true_ret_count );
+    }
     if (!p->wait_skipped)
-        ok( *p->count == p->thread_count, "got %ld.\n", *p->count );
+        ok( *p->count == p->thread_count * p->iter_count, "got %ld.\n", *p->count );
     return 0;
 }
 
@@ -1237,7 +1300,12 @@ static void test_barrier(void)
 
     status = pRtlInitBarrier(  &barrier, 0, -1 );
     ok( !status, "got %#lx.\n", status );
-
+    if (0)
+    {
+        /* Waits forever. */
+        bval = pRtlBarrier( &barrier, 0 );
+        ok( bval == 1, "got %#x.\n", bval );
+    }
     status = pRtlInitBarrier(  &barrier, 1, -2 );
     ok( !status, "got %#lx.\n", status );
 
@@ -1269,20 +1337,28 @@ static void test_barrier(void)
     p.thread_count = ARRAY_SIZE(threads) + 1;
     p.count = &count;
     p.true_ret_count = &true_ret_count;
+    p.iter_count = 100;
     p.wait_skipped = TRUE;
+
+    status = pRtlInitBarrier( &barrier, p.thread_count, -1 );
+    ok( !status, "got %#lx.\n", status );
     count = 0;
     true_ret_count = 0;
     for (i = 0; i < ARRAY_SIZE(threads); ++i)
         threads[i] = CreateThread( NULL, 0, test_barrier_thread, &p, 0, NULL );
-    InterlockedIncrement( p.count );
-    if (pRtlBarrier( p.barrier, p.flags ))
-        InterlockedIncrement( p.true_ret_count );
+
+    for (i = 0; i < p.iter_count; ++i)
+    {
+        InterlockedIncrement( p.count );
+        if (pRtlBarrier( p.barrier, p.flags ))
+            InterlockedIncrement( p.true_ret_count );
+    }
     for (i = 0; i < ARRAY_SIZE(threads); ++i)
     {
         WaitForSingleObject( threads[i], INFINITE );
         CloseHandle( threads[i] );
     }
-    ok( true_ret_count == p.thread_count, "got %ld.\n", true_ret_count );
+    ok( true_ret_count == p.iter_count, "got %ld.\n", true_ret_count );
 
     /* Normal case. */
     status = pRtlInitBarrier( &barrier, p.thread_count, -1 );
@@ -1292,6 +1368,7 @@ static void test_barrier(void)
     pRtlDeleteBarrier( &barrier );
     p.flags = 0x10000;
     p.wait_skipped = FALSE;
+    p.iter_count = 1;
     count = 0;
     true_ret_count = 0;
     for (i = 0; i < ARRAY_SIZE(threads); ++i)
@@ -1370,6 +1447,7 @@ START_TEST(sync)
 
     if (argc > 2) return;
 
+    pNtAlertMultipleThreadByThreadId = (void *)GetProcAddress(module, "NtAlertMultipleThreadByThreadId");
     pNtAlertThreadByThreadId        = (void *)GetProcAddress(module, "NtAlertThreadByThreadId");
     pNtClose                        = (void *)GetProcAddress(module, "NtClose");
     pNtCreateEvent                  = (void *)GetProcAddress(module, "NtCreateEvent");

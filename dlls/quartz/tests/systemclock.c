@@ -173,23 +173,20 @@ static void test_get_time(void)
 
     hr = IReferenceClock_GetTime(clock, &time1);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    ok(time1 % 10000 == 0, "Expected no less than 1ms coarseness, but got time %s.\n",
-            wine_dbgstr_longlong(time1));
+    ok(time1 % 10000 == 0, "Expected no less than 1ms coarseness, but got time %I64d.\n", time1);
 
     ticks = (REFERENCE_TIME)timeGetTime() * 10000;
 
     hr = IReferenceClock_GetTime(clock, &time2);
     ok(hr == (time2 == time1 ? S_FALSE : S_OK), "Got hr %#lx.\n", hr);
-    ok(time2 % 10000 == 0, "Expected no less than 1ms coarseness, but got time %s.\n",
-            wine_dbgstr_longlong(time1));
+    ok(time2 % 10000 == 0, "Expected no less than 1ms coarseness, but got time %I64d.\n", time1);
 
     ok(time2 >= ticks && ticks >= time1, "Got timestamps %I64d, %I64d, %I64d.\n", time1, ticks, time2);
 
     Sleep(100);
     hr = IReferenceClock_GetTime(clock, &time2);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    ok(time2 - time1 > 80 * 10000, "Expected about %s, but got %s.\n",
-            wine_dbgstr_longlong(time1 + 80 * 10000), wine_dbgstr_longlong(time2));
+    ok(time2 - time1 > 80 * 10000, "Expected about %I64d, but got %I64d.\n", time1 + 80 * 10000, time2);
 
     ref = IReferenceClock_Release(clock);
     ok(!ref, "Got outstanding refcount %ld.\n", ref);
@@ -197,9 +194,10 @@ static void test_get_time(void)
 
 static void test_advise(void)
 {
+    const REFERENCE_TIME delay_ns = 100 * 10000;
     IReferenceClock *clock = create_system_clock();
+    REFERENCE_TIME current, now;
     HANDLE event, semaphore;
-    REFERENCE_TIME current;
     DWORD_PTR cookie;
     unsigned int i;
     HRESULT hr;
@@ -217,10 +215,14 @@ static void test_advise(void)
     hr = IReferenceClock_AdviseTime(clock, -1000 * 10000, 500 * 10000, (HEVENT)event, &cookie);
     ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
 
-    hr = IReferenceClock_AdviseTime(clock, current, 500 * 10000, (HEVENT)event, &cookie);
+    hr = IReferenceClock_GetTime(clock, &current);
+    ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
+    hr = IReferenceClock_AdviseTime(clock, current, delay_ns, (HEVENT)event, &cookie);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    ok(WaitForSingleObject(event, 460) == WAIT_TIMEOUT, "Event should not be signaled.\n");
-    ok(!WaitForSingleObject(event, 80), "Event should be signaled.\n");
+    ok(!WaitForSingleObject(event, 5000), "Event should be signaled.\n");
+    hr = IReferenceClock_GetTime(clock, &now);
+    ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
+    ok(now >= current + delay_ns, "Got %I64d, expected at least %I64d.\n", now, current + delay_ns);
 
     hr = IReferenceClock_Unadvise(clock, cookie);
     ok(hr == S_FALSE, "Got hr %#lx.\n", hr);
@@ -237,10 +239,12 @@ static void test_advise(void)
     ResetEvent(event);
     hr = IReferenceClock_GetTime(clock, &current);
     ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
-    hr = IReferenceClock_AdviseTime(clock, current + 500 * 10000, 0, (HEVENT)event, &cookie);
+    hr = IReferenceClock_AdviseTime(clock, current + delay_ns, 0, (HEVENT)event, &cookie);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    ok(WaitForSingleObject(event, 460) == WAIT_TIMEOUT, "Event should not be signaled.\n");
-    ok(!WaitForSingleObject(event, 80), "Event should be signaled.\n");
+    ok(!WaitForSingleObject(event, 5000), "Event should be signaled.\n");
+    hr = IReferenceClock_GetTime(clock, &now);
+    ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
+    ok(now >= current + delay_ns, "Got %I64d, expected at least %I64d.\n", now, current + delay_ns);
 
     hr = IReferenceClock_GetTime(clock, &current);
     ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
@@ -257,11 +261,17 @@ static void test_advise(void)
     hr = IReferenceClock_AdvisePeriodic(clock, -500 * 10000, 1000 * 10000, (HSEMAPHORE)semaphore, &cookie);
     ok(hr == E_INVALIDARG, "Got hr %#lx.\n", hr);
 
-    hr = IReferenceClock_AdvisePeriodic(clock, current, 100 * 10000, (HSEMAPHORE)semaphore, &cookie);
+    hr = IReferenceClock_GetTime(clock, &current);
+    ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
+    hr = IReferenceClock_AdvisePeriodic(clock, current, delay_ns, (HSEMAPHORE)semaphore, &cookie);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);
-    ok(!WaitForSingleObject(semaphore, 50), "Semaphore should be signaled.\n");
     for (i = 0; i < 5; ++i)
-        ok(!WaitForSingleObject(semaphore, 500), "Semaphore should be signaled.\n");
+    {
+        ok(!WaitForSingleObject(semaphore, 5000), "Semaphore should be signaled.\n");
+        hr = IReferenceClock_GetTime(clock, &now);
+        ok(SUCCEEDED(hr), "Got hr %#lx.\n", hr);
+        ok(now >= current + i * delay_ns, "Got %I64d, expected at least %I64d.\n", now, current + i * delay_ns);
+    }
 
     hr = IReferenceClock_Unadvise(clock, cookie);
     ok(hr == S_OK, "Got hr %#lx.\n", hr);

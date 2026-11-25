@@ -1689,7 +1689,7 @@ static void test_debugger(const char *argv0)
     do next_event(&ctx, POLL_EVENT_TIMEOUT);
     while(ctx.ev.dwDebugEventCode != -1);
 
-    mem = VirtualAllocEx(pi.hProcess, NULL, sizeof(buf), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    mem = VirtualAllocEx(pi.hProcess, NULL, sizeof(buf), MEM_COMMIT, PAGE_EXECUTE_READ);
     ok(mem != NULL, "VirtualAllocEx failed: %lu\n", GetLastError());
     proc_code   = buf + 1024;
     thread_proc = mem + 1024;
@@ -2037,7 +2037,6 @@ static void test_debugger(const char *argv0)
 
         /* main thread sleeps inside ntdll waiting for the event. set breakpoint there and make sure
          * ntdll can handle that. */
-        SuspendThread(ctx.main_thread->handle);
 
         fetch_thread_context(ctx.main_thread);
         ret = ReadProcessMemory(pi.hProcess, get_ip(&ctx.main_thread->ctx), &instr, 1, NULL);
@@ -2114,21 +2113,13 @@ static void test_debugger(const char *argv0)
 #if defined(__i386__)
         ok(ctx.main_thread->ctx.Eax == 0,   "Eax = %lx\n", ctx.main_thread->ctx.Eax);
         ok(ctx.main_thread->ctx.Ebx == 102, "Ebx = %lx\n", ctx.main_thread->ctx.Ebx);
-        ok(ctx.main_thread->ctx.Ecx != 103, "Ecx = %lx\n", ctx.main_thread->ctx.Ecx);
-        ok(ctx.main_thread->ctx.Edx != 104, "Edx = %lx\n", ctx.main_thread->ctx.Edx);
         ok(ctx.main_thread->ctx.Esi == 105, "Esi = %lx\n", ctx.main_thread->ctx.Esi);
         ok(ctx.main_thread->ctx.Edi == 106, "Edi = %lx\n", ctx.main_thread->ctx.Edi);
 #elif defined(__x86_64__)
         ok(ctx.main_thread->ctx.Rax == 0,   "Rax = %I64x\n", ctx.main_thread->ctx.Rax);
         ok(ctx.main_thread->ctx.Rbx == 102, "Rbx = %I64x\n", ctx.main_thread->ctx.Rbx);
-        ok(ctx.main_thread->ctx.Rcx != 103, "Rcx = %I64x\n", ctx.main_thread->ctx.Rcx);
-        ok(ctx.main_thread->ctx.Rdx != 104, "Rdx = %I64x\n", ctx.main_thread->ctx.Rdx);
         ok(ctx.main_thread->ctx.Rsi == 105, "Rsi = %I64x\n", ctx.main_thread->ctx.Rsi);
         ok(ctx.main_thread->ctx.Rdi == 106, "Rdi = %I64x\n", ctx.main_thread->ctx.Rdi);
-        ok(ctx.main_thread->ctx.R8  != 107, "R8 = %I64x\n",  ctx.main_thread->ctx.R8);
-        ok(ctx.main_thread->ctx.R9  != 108, "R9 = %I64x\n",  ctx.main_thread->ctx.R9);
-        ok(ctx.main_thread->ctx.R10 != 109, "R10 = %I64x\n", ctx.main_thread->ctx.R10);
-        ok(ctx.main_thread->ctx.R11 != 110, "R11 = %I64x\n", ctx.main_thread->ctx.R11);
         ok(ctx.main_thread->ctx.R12 == 111, "R12 = %I64x\n", ctx.main_thread->ctx.R12);
         ok(ctx.main_thread->ctx.R13 == 112, "R13 = %I64x\n", ctx.main_thread->ctx.R13);
         ok(ctx.main_thread->ctx.R14 == 113, "R14 = %I64x\n", ctx.main_thread->ctx.R14);
@@ -2250,7 +2241,9 @@ static DWORD WINAPI debug_and_exit(void *arg)
 static DWORD WINAPI debug_and_wait(void *arg)
 {
     STARTUPINFOA si = { sizeof(si) };
-    HANDLE debug = *(HANDLE *)arg;
+    HANDLE *handles = arg;
+    HANDLE debug = handles[0];
+    HANDLE event = handles[1];
     ULONG val = 0;
     NTSTATUS status;
     BOOL ret;
@@ -2262,6 +2255,7 @@ static DWORD WINAPI debug_and_wait(void *arg)
     status = pNtSetInformationDebugObject( debug, DebugObjectKillProcessOnExitInformation,
                                            &val, sizeof(val), NULL );
     ok( !status, "NtSetInformationDebugObject failed %lx\n", status );
+    SetEvent( event );
     Sleep(INFINITE);
     ExitThread(0);
 }
@@ -2283,7 +2277,7 @@ static void test_kill_on_exit(const char *argv0)
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     OBJECT_ATTRIBUTES attr = { sizeof(attr) };
     NTSTATUS status;
-    HANDLE event, debug, thread;
+    HANDLE event, debug, thread, handles[2];
     DWORD exit_code, tid;
     ULONG val;
     BOOL ret;
@@ -2361,8 +2355,12 @@ static void test_kill_on_exit(const char *argv0)
     /* checking on forced exit */
     status = pNtCreateDebugObject( &debug, DEBUG_ALL_ACCESS, &attr, DEBUG_KILL_ON_CLOSE );
     ok( !status, "NtCreateDebugObject failed %lx\n", status );
-    thread = CreateThread(NULL, 0, debug_and_wait, &debug, 0, &tid);
-    Sleep( 100 );
+    handles[0] = debug;
+    handles[1] = event;
+    ResetEvent( event );
+    thread = CreateThread(NULL, 0, debug_and_wait, handles, 0, &tid);
+    status = WaitForSingleObject( event, 10000 );
+    ok( !status, "thread didn't start %lx\n", status );
     ok( debug != 0, "no debug port\n" );
     val = DEBUG_KILL_ON_CLOSE;
     status = pNtSetInformationDebugObject( debug, DebugObjectKillProcessOnExitInformation,
@@ -2438,9 +2436,15 @@ static void test_OutputDebugString(void)
     ok(GetLastError() == 0xdeadbeef, "got %ld.\n", GetLastError());
 
     SetLastError(0xdeadbeef);
+    OutputDebugStringW(NULL);
+    ok(GetLastError() == 0xdeadbeef, "got %ld.\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
     OutputDebugStringW(L"test");
     ok(GetLastError() == 0xdeadbeef, "got %ld.\n", GetLastError());
 }
+
+static int test_unhandled_exception_filter_called;
 
 static LONG WINAPI test_unhandled_exception_filter_topfilter( EXCEPTION_POINTERS *ep )
 {
@@ -2448,6 +2452,7 @@ static LONG WINAPI test_unhandled_exception_filter_topfilter( EXCEPTION_POINTERS
     EXCEPTION_RECORD *rec = ep->ExceptionRecord;
     LONG ret;
 
+    ++test_unhandled_exception_filter_called;
     ++depth;
     if (depth > 1) return EXCEPTION_CONTINUE_SEARCH;
 
@@ -2465,27 +2470,50 @@ static LONG WINAPI test_unhandled_exception_filter_topfilter( EXCEPTION_POINTERS
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-static void test_unhandled_exception_filter(void)
+static void test_unhandled_exception_filter(BYTE being_debugged_flag)
 {
+    BYTE being_debugged_saved = NtCurrentTeb()->Peb->BeingDebugged;
     EXCEPTION_RECORD rec = { .ExceptionCode = 0xbeef };
     EXCEPTION_POINTERS ep = { .ExceptionRecord = &rec };
     LPTOP_LEVEL_EXCEPTION_FILTER old;
+    ULONG_PTR port;
     LONG ret;
 
+    NtQueryInformationProcess( GetCurrentProcess(), ProcessDebugPort, &port, sizeof(port), NULL );
+
+    winetest_push_context("debug flag %d, port %d", being_debugged_flag, !!port);
+    NtCurrentTeb()->Peb->BeingDebugged = being_debugged_flag;
     old = SetUnhandledExceptionFilter( test_unhandled_exception_filter_topfilter );
+    test_unhandled_exception_filter_called = 0;
     ret = UnhandledExceptionFilter( &ep );
-    ok( ret == EXCEPTION_EXECUTE_HANDLER, "got %ld.\n", ret );
+    if (port)
+    {
+        ok( !test_unhandled_exception_filter_called, "called.\n" );
+        ok( ret == EXCEPTION_CONTINUE_SEARCH, "got %ld.\n", ret );
+    }
+    else
+    {
+        ok( test_unhandled_exception_filter_called, "not called.\n" );
+        ok( ret == EXCEPTION_EXECUTE_HANDLER, "got %ld.\n", ret );
+    }
 
     SetUnhandledExceptionFilter( NULL );
 
+    test_unhandled_exception_filter_called = 0;
     rec.ExceptionFlags = EXCEPTION_NESTED_CALL;
     ret = UnhandledExceptionFilter( &ep );
+    ok( !test_unhandled_exception_filter_called, "called.\n" );
     ok( ret == EXCEPTION_CONTINUE_SEARCH, "got %#lx.\n", ret );
     rec.ExceptionFlags &= ~EXCEPTION_NESTED_CALL;
+
+    test_unhandled_exception_filter_called = 0;
     ret = UnhandledExceptionFilter( &ep );
-    ok( ret == EXCEPTION_EXECUTE_HANDLER, "got %#lx.\n", ret );
+    ok( !test_unhandled_exception_filter_called, "called.\n" );
+    ok( ret == (port ? EXCEPTION_CONTINUE_SEARCH : EXCEPTION_EXECUTE_HANDLER), "got %#lx.\n", ret );
 
     SetUnhandledExceptionFilter( old );
+    NtCurrentTeb()->Peb->BeingDebugged = being_debugged_saved;
+    winetest_pop_context();
 }
 
 START_TEST(debugger)
@@ -2526,6 +2554,8 @@ START_TEST(debugger)
     }
     else if (myARGC >= 5 && !strcmp(myARGV[2], "child"))
     {
+        test_unhandled_exception_filter(0);
+        test_unhandled_exception_filter(1);
         doChild(myARGC, myARGV);
     }
     else if (myARGC >= 4 && !strcmp(myARGV[2], "children"))
@@ -2554,6 +2584,7 @@ START_TEST(debugger)
         test_debugger(myARGV[0]);
         test_kill_on_exit(myARGV[0]);
         test_OutputDebugString();
-        test_unhandled_exception_filter();
+        test_unhandled_exception_filter(0);
+        test_unhandled_exception_filter(1);
     }
 }

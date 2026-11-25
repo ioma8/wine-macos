@@ -112,6 +112,7 @@ typedef struct _CMD_FOR_CONTROL
 typedef struct _CMD_NODE
 {
     CMD_OPERATOR      op;            /* operator */
+    BOOL              do_echo;
     CMD_REDIRECTION  *redirects;     /* Redirections */
     union
     {
@@ -161,27 +162,42 @@ static inline BOOL WCMD_is_break(RETURN_CODE return_code)
     return return_code == RETURN_CODE_ABORTED || return_code == RETURN_CODE_GOTO;
 }
 
+struct split_command
+{
+    const WCHAR          *command;	    /* The whole command line invoked the batch file */
+    unsigned              num_arguments;
+    struct
+    {
+        /* Note: command is at max MAXSTRING = 8192 = 2^13 bytes long */
+        unsigned start_pos : 13, length : 13;
+        const WCHAR *raw_string;
+        const WCHAR *unquoted_string;
+    } *arguments; /* num_arguments */
+};
+
 BOOL WCMD_print_volume_information(const WCHAR *);
+
+struct word_iterator;
 
 RETURN_CODE WCMD_assoc(const WCHAR *, BOOL);
 RETURN_CODE WCMD_call(WCHAR *command);
-RETURN_CODE WCMD_choice(WCHAR *);
-RETURN_CODE WCMD_clear_screen(void);
+RETURN_CODE WCMD_choice(struct word_iterator *);
+RETURN_CODE WCMD_clear_screen(struct word_iterator *);
 RETURN_CODE WCMD_color(void);
-RETURN_CODE WCMD_copy(WCHAR *);
-RETURN_CODE WCMD_create_dir(WCHAR *);
-RETURN_CODE WCMD_delete(WCHAR *);
-RETURN_CODE WCMD_directory(WCHAR *);
+RETURN_CODE WCMD_copy(struct word_iterator *);
+RETURN_CODE WCMD_create_dir(struct word_iterator *);
+RETURN_CODE WCMD_delete(struct word_iterator *);
+RETURN_CODE WCMD_directory(struct word_iterator *);
 RETURN_CODE WCMD_echo(const WCHAR *);
 RETURN_CODE WCMD_endlocal(void);
 void WCMD_enter_paged_mode(const WCHAR *);
 RETURN_CODE WCMD_exit(void);
 BOOL WCMD_get_fullpath(const WCHAR *, SIZE_T, WCHAR *, WCHAR **);
-RETURN_CODE WCMD_give_help(WCHAR *args);
-RETURN_CODE WCMD_goto(void);
+RETURN_CODE WCMD_give_help(struct word_iterator *);
+RETURN_CODE WCMD_goto(struct word_iterator *);
 RETURN_CODE WCMD_label(void);
 void WCMD_leave_paged_mode(void);
-RETURN_CODE WCMD_more(WCHAR *);
+RETURN_CODE WCMD_more(struct word_iterator *);
 RETURN_CODE WCMD_move (void);
 WCHAR* WINAPIV WCMD_format_string(const WCHAR *format, ...);
 void WINAPIV WCMD_output(const WCHAR *format, ...);
@@ -190,14 +206,14 @@ RETURN_CODE WCMD_output_asis(const WCHAR *message);
 RETURN_CODE WCMD_output_flush(void);
 RETURN_CODE WCMD_output_asis_stderr(const WCHAR *message);
 RETURN_CODE WCMD_pause(void);
-RETURN_CODE WCMD_popd(void);
+RETURN_CODE WCMD_popd(struct word_iterator *);
 void WCMD_print_error (void);
-RETURN_CODE WCMD_pushd(const WCHAR *args);
-RETURN_CODE WCMD_remove_dir(WCHAR *command);
+RETURN_CODE WCMD_pushd(struct word_iterator *);
+RETURN_CODE WCMD_remove_dir(struct word_iterator *);
 RETURN_CODE WCMD_rename(void);
-RETURN_CODE WCMD_setlocal(WCHAR *args);
+RETURN_CODE WCMD_setlocal(struct word_iterator *);
 RETURN_CODE WCMD_setshow_date(void);
-RETURN_CODE WCMD_setshow_default(const WCHAR *args);
+RETURN_CODE WCMD_setshow_directory(struct word_iterator *);
 RETURN_CODE WCMD_setshow_env(WCHAR *command);
 RETURN_CODE WCMD_setshow_path(const WCHAR *args);
 RETURN_CODE WCMD_setshow_prompt(void);
@@ -205,21 +221,65 @@ RETURN_CODE WCMD_setshow_time(void);
 RETURN_CODE WCMD_shift(const WCHAR *args);
 RETURN_CODE WCMD_start(WCHAR *args);
 RETURN_CODE WCMD_title(const WCHAR *);
-RETURN_CODE WCMD_type(WCHAR *);
+RETURN_CODE WCMD_type(struct word_iterator *);
 RETURN_CODE WCMD_verify(void);
 RETURN_CODE WCMD_version(void);
 RETURN_CODE WCMD_volume(void);
-RETURN_CODE WCMD_mklink(WCHAR *args);
+RETURN_CODE WCMD_mklink(struct word_iterator *);
 RETURN_CODE WCMD_change_drive(WCHAR drive);
 
-WCHAR *WCMD_fgets (WCHAR *buf, DWORD n, HANDLE stream);
-WCHAR *WCMD_parameter (WCHAR *s, int n, WCHAR **start, BOOL raw, BOOL wholecmdline);
-WCHAR *WCMD_parameter_with_delims (WCHAR *s, int n, WCHAR **start, BOOL raw,
-                                   BOOL wholecmdline, const WCHAR *delims);
+WCHAR *WCMD_fgets(WCHAR *buf, DWORD n, HANDLE stream);
+BOOL WCMD_next_word(const WCHAR *s, const WCHAR *delims, WCHAR **start, size_t *length, BOOL with_empty);
+WCHAR *WCMD_dup(const WCHAR *s, size_t length);
+WCHAR *WCMD_dup_unquoted(const WCHAR *s, size_t length);
+struct word_iterator
+{
+    /* internal fields, do not not use them */
+    const WCHAR *from;
+    size_t position, length;
+    /* flags at creation time */
+    const WCHAR *delimiters;
+    unsigned int flags;
+    /* getters */
+    WCHAR *raw_argument;
+    WCHAR *unquoted_argument;
+    BOOL is_an_option;
+};
+#define WORD_WITH_OPT 0x01
+#define WORD_WITH_QUOTED_OPT 0x02
+#define WORD_WITH_EMPTY_LAST_ARG 0x04
+
+struct word_iterator *WCMD_word_iterator_init(struct word_iterator *iterator, const WCHAR *string, const WCHAR *delims, unsigned int flags);
+BOOL WCMD_word_iterator_advance(struct word_iterator *iterator);
+BOOL WCMD_word_iterator_can_advance(struct word_iterator *iterator);
+BOOL WCMD_word_iterator_advance_if_option_arg(struct word_iterator *iterator, const WCHAR *opt, BOOL optsep, WCHAR **arg);
+static inline void WCMD_word_iterator_dispose(struct word_iterator *iterator)
+{
+    free(iterator->raw_argument);
+    free(iterator->unquoted_argument);
+}
+static inline void WCMD_word_iterator_reset(struct word_iterator *iterator)
+{
+    iterator->position = 0;
+    iterator->length = 0;
+    free(iterator->raw_argument);
+    free(iterator->unquoted_argument);
+    iterator->raw_argument = NULL;
+    iterator->unquoted_argument = NULL;
+}
+void WCMD_word_iterator_extend_rest_of_line(struct word_iterator *iterator);
+
+WCHAR *WCMD_parameter(WCHAR *s, int n, WCHAR **start, BOOL raw);
+WCHAR *WCMD_parameter_with_delims(WCHAR *s, int n, WCHAR **start, BOOL raw, const WCHAR *delims);
+#define SPACE_DELIMS      L" \t"
+#define STANDARD_DELIMS   SPACE_DELIMS L",=;"
+#define EXECUTABLE_DELIMS STANDARD_DELIMS L"("
 WCHAR *WCMD_skip_leading_spaces (WCHAR *string);
 BOOL WCMD_keyword_ws_found(const WCHAR *keyword, const WCHAR *ptr);
 void WCMD_HandleTildeModifiers(WCHAR **start, BOOL atExecute);
-
+BOOL WCMD_split_command_build(const WCHAR *from, struct split_command *split_command);
+void WCMD_split_command_dispose(struct split_command *split_command);
+BOOL WCMD_split_command_get_positional_argument(struct split_command *split_command, WCHAR arg_char, const WCHAR **start);
 WCHAR *WCMD_strip_quotes(WCHAR *cmd);
 WCHAR *WCMD_LoadMessage(UINT id);
 WCHAR *WCMD_strsubstW(WCHAR *start, const WCHAR* next, const WCHAR* insert, int len);
@@ -235,9 +295,9 @@ RETURN_CODE node_execute(CMD_NODE *node);
 RETURN_CODE WCMD_call_batch(const WCHAR *, WCHAR *);
 RETURN_CODE WCMD_call_command(WCHAR *command);
 RETURN_CODE WCMD_run_builtin_command(int cmd_index, WCHAR *cmd);
+RETURN_CODE WCMD_run_external_full_path(const WCHAR *file, WCHAR *full_cmdline);
 
-BOOL WCMD_find_label(HANDLE h, const WCHAR*, LARGE_INTEGER *pos);
-void WCMD_set_label_end(WCHAR *string);
+RETURN_CODE WCMD_jump_to_label(WCHAR *label);
 
 RETURN_CODE WCMD_ctrlc_status(void);
 
@@ -288,7 +348,7 @@ struct batch_file
 
 struct batch_context
 {
-    WCHAR                *command;	    /* The command which invoked the batch file */
+    struct split_command  split_command;
     LARGE_INTEGER         file_position;
     int                   shift_count[10];  /* Offset in terms of shifts for %0 - %9 */
     struct batch_context *prev_context;     /* Pointer to the previous context block */
@@ -303,11 +363,7 @@ struct env_stack
 {
     struct batch_context *context;
     struct env_stack *next;
-    union
-    {
-        int     stackdepth;   /* Only used for pushd and popd */
-        WCHAR   cwd;          /* Only used for set/endlocal   */
-    } u;
+    WCHAR cwd;                /* Only used for set/endlocal   */
     WCHAR *strings;
     BOOL delayedsubst;        /* Is delayed substitution in effect */
 };
@@ -432,53 +488,57 @@ extern WCHAR anykey[];
 extern WCHAR version_string[];
 
 /* Translated messages */
-#define WCMD_ALLHELP          1000
-#define WCMD_CONFIRM          1001
-#define WCMD_YES              1002
-#define WCMD_NO               1003
-#define WCMD_NOASSOC          1004
-#define WCMD_NOFTYPE          1005
-#define WCMD_OVERWRITE        1006
-#define WCMD_MORESTR          1007
-#define WCMD_TRUNCATEDLINE    1008
-#define WCMD_NYI              1009
-#define WCMD_NOARG            1010
-#define WCMD_SYNTAXERR        1011
-#define WCMD_FILENOTFOUND     1012
-#define WCMD_NOCMDHELP        1013
-#define WCMD_NOTARGET         1014
-#define WCMD_CURRENTDATE      1015
-#define WCMD_CURRENTTIME      1016
-#define WCMD_NEWDATE          1017
-#define WCMD_NEWTIME          1018
-#define WCMD_MISSINGENV       1019
-#define WCMD_READFAIL         1020
-#define WCMD_CALLINSCRIPT     1021
-#define WCMD_ALL              1022
-#define WCMD_DELPROMPT        1023
-#define WCMD_ECHOPROMPT       1024
-#define WCMD_VERIFYPROMPT     1025
-#define WCMD_VERIFYERR        1026
-#define WCMD_ARGERR           1027
-#define WCMD_VOLUMESERIALNO   1028
-#define WCMD_VOLUMEPROMPT     1029
-#define WCMD_ANYKEY           1031
-#define WCMD_CONSTITLE        1032
-#define WCMD_VERSION          1033
-#define WCMD_MOREPROMPT       1034
-#define WCMD_LINETOOLONG      1035
-#define WCMD_VOLUMELABEL      1036
-#define WCMD_VOLUMENOLABEL    1037
-#define WCMD_YESNO            1038
-#define WCMD_YESNOALL         1039
-#define WCMD_NO_COMMAND_FOUND 1040
-#define WCMD_DIVIDEBYZERO     1041
-#define WCMD_NOOPERAND        1042
-#define WCMD_NOOPERATOR       1043
-#define WCMD_BADPAREN         1044
-#define WCMD_BADHEXOCT        1045
-#define WCMD_FILENAMETOOLONG  1046
-#define WCMD_BADTOKEN         1047
-#define WCMD_ENDOFLINE        1048
-#define WCMD_ENDOFFILE        1049
-#define WCMD_NUMCOPIED        1050
+#define WCMD_ALLHELP                    1000
+#define WCMD_CONFIRM                    1001
+#define WCMD_YES                        1002
+#define WCMD_NO                         1003
+#define WCMD_NOASSOC                    1004
+#define WCMD_NOFTYPE                    1005
+#define WCMD_OVERWRITE                  1006
+#define WCMD_MORESTR                    1007
+#define WCMD_TRUNCATEDLINE              1008
+#define WCMD_NYI                        1009
+#define WCMD_NOARG                      1010
+#define WCMD_SYNTAXERR                  1011
+#define WCMD_FILENOTFOUND               1012
+#define WCMD_NOCMDHELP                  1013
+#define WCMD_NOTARGET                   1014
+#define WCMD_CURRENTDATE                1015
+#define WCMD_CURRENTTIME                1016
+#define WCMD_NEWDATE                    1017
+#define WCMD_NEWTIME                    1018
+#define WCMD_MISSINGENV                 1019
+#define WCMD_READFAIL                   1020
+#define WCMD_CALLINSCRIPT               1021
+#define WCMD_ALL                        1022
+#define WCMD_DELPROMPT                  1023
+#define WCMD_ECHOPROMPT                 1024
+#define WCMD_VERIFYPROMPT               1025
+#define WCMD_VERIFYERR                  1026
+#define WCMD_ARGERR                     1027
+#define WCMD_VOLUMESERIALNO             1028
+#define WCMD_VOLUMEPROMPT               1029
+#define WCMD_ANYKEY                     1031
+#define WCMD_CONSTITLE                  1032
+#define WCMD_VERSION                    1033
+#define WCMD_MOREPROMPT                 1034
+#define WCMD_LINETOOLONG                1035
+#define WCMD_VOLUMELABEL                1036
+#define WCMD_VOLUMENOLABEL              1037
+#define WCMD_YESNO                      1038
+#define WCMD_YESNOALL                   1039
+#define WCMD_NO_COMMAND_FOUND           1040
+#define WCMD_DIVIDEBYZERO               1041
+#define WCMD_NOOPERAND                  1042
+#define WCMD_NOOPERATOR                 1043
+#define WCMD_BADPAREN                   1044
+#define WCMD_BADHEXOCT                  1045
+#define WCMD_FILENAMETOOLONG            1046
+#define WCMD_BADTOKEN                   1047
+#define WCMD_ENDOFLINE                  1048
+#define WCMD_ENDOFFILE                  1049
+#define WCMD_NUMCOPIED                  1050
+#define WCMD_NOCOPYTOSELF               1051
+#define WCMD_INVALID_DIRECTORY          1052
+#define WCMD_NO_CURRENT_DIRECTORY       1053
+#define WCMD_NO_DRIVE                   1054

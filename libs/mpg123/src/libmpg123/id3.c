@@ -241,7 +241,9 @@ static mpg123_text *add_id3_text( mpg123_text **list, size_t *size
 	}
 	mdebug("add_id3_text: append to list of %zu", *size);
 	// Nothing found, add new one.
-	mpg123_text *x = INT123_safe_realloc(*list, sizeof(mpg123_text)*(*size+1));
+	mpg123_text *x = (*size < SIZE_MAX)
+	?	INT123_safe_reallocn(*list, sizeof(mpg123_text), (*size+1))
+	:	NULL;
 	if(x == NULL) return NULL; /* bad */
 
 	*list  = x;
@@ -269,7 +271,9 @@ static mpg123_picture *add_id3_picture(mpg123_picture **list, size_t *size, char
 			return entry;
 	}
 	// Append a new one.
-	mpg123_picture *x = INT123_safe_realloc(*list, sizeof(mpg123_picture)*(*size+1));
+	mpg123_picture *x = (*size < SIZE_MAX)
+	?	INT123_safe_reallocn(*list, sizeof(mpg123_picture), (*size+1))
+	:	NULL;
 	if(x == NULL) return NULL; /* bad */
 
 	*list  = x;
@@ -330,9 +334,9 @@ void INT123_id3_link(mpg123_handle *fr)
 	Since we can overwrite strings with ID3 update frames, don't free
 	memory, just grow strings.
 */
-static void store_id3_text(mpg123_string *sb, unsigned char *source, size_t source_size, const int noquiet, const int notranslate)
+static void store_id3_text(mpg123_string *sb, unsigned char encoding, unsigned char *source
+,	size_t source_size, const int noquiet, const int notranslate)
 {
-	unsigned char encoding;
 	if(sb) // Always overwrite, even with nothing.
 		sb->fill = 0;
 	if(!source_size)
@@ -345,25 +349,25 @@ static void store_id3_text(mpg123_string *sb, unsigned char *source, size_t sour
 	if(notranslate)
 	{
 		/* Future: Add a path for ID3 errors. */
-		if(!mpg123_grow_string(sb, source_size))
+		if(!mpg123_grow_string(sb, source_size+1))
 		{
 			if(noquiet) error("Cannot resize target string, out of memory?");
 			return;
 		}
-		memcpy(sb->p, source, source_size);
-		sb->fill = source_size;
-		debug1("stored undecoded ID3 text of size %zu", source_size);
+		sb->p[0] = (char)encoding;
+		memcpy(sb->p+1, source, source_size);
+		sb->fill = source_size+1;
+		debug1("stored undecoded ID3 text of size %zu", source_size+1);
 		return;
 	}
 
-	encoding = source[0];
 	if(encoding > mpg123_id3_enc_max)
 	{
 		if(noquiet)
 			error1("Unknown text encoding %u, I take no chances, sorry!", encoding);
 		return;
 	}
-	INT123_id3_to_utf8(sb, encoding, source+1, source_size-1, noquiet);
+	INT123_id3_to_utf8(sb, encoding, source, source_size, noquiet);
 
 	if(sb->fill) debug1("UTF-8 string (the first one): %s", sb->p);
 	else if(noquiet) error("unable to convert string to UTF-8 (out of memory, junk input?)!");
@@ -449,6 +453,11 @@ static void process_text(mpg123_handle *fr, unsigned char *realdata, size_t real
 {
 	/* Text encoding          $xx */
 	/* The text (encoded) ... */
+	if(realsize < 1)
+	{
+		if(NOQUIET) error("Not even an encoding byte?");
+		return;
+	}
 	mpg123_text *t = add_text(fr, id);
 	if(VERBOSE4) fprintf(stderr, "Note: Storing text from %s encoding\n", enc_name(realdata[0]));
 	if(t == NULL)
@@ -460,7 +469,8 @@ static void process_text(mpg123_handle *fr, unsigned char *realdata, size_t real
 	?	(char[5]) { t->id[0], t->id[1], t->id[2], t->id[3], 0 }
 	:	"(nil)" );
 	memcpy(t->id, id, 4);
-	store_id3_text(&t->text, realdata, realsize, NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT);
+	store_id3_text( &t->text, realdata[0], realdata+1, realsize-1
+	,	NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT );
 	if(VERBOSE4) // Do not print unsanitized text to terminals!
 		fprintf(stderr, "Note: ID3v2 %c%c%c%c text frame stored\n", id[0], id[1], id[2], id[3]);
 }
@@ -577,8 +587,6 @@ static void process_comment(mpg123_handle *fr, enum frame_types tt, unsigned cha
 		return;
 	}
 	memcpy(lang, realdata+1, 3);
-	/* Now I can abuse a byte from lang for the encoding. */
-	descr[-1] = encoding;
 	/* Be careful with finding the end of description, I have to honor encoding here. */
 	text = next_text(descr, encoding, realsize-(descr-realdata));
 	if(text == NULL)
@@ -591,14 +599,14 @@ static void process_comment(mpg123_handle *fr, enum frame_types tt, unsigned cha
 		mpg123_string description;
 		mpg123_init_string(&description);
 		// Store the text, with desired encoding, but for comments always a local copy in UTF-8.
-		store_id3_text( &description, descr-1, text-descr+1
+		store_id3_text( &description, encoding, descr, text-descr
 		,	NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT );
 		if(tt == comment)
-			store_id3_text( &localcom.description, descr-1, text-descr+1
+			store_id3_text( &localcom.description, encoding, descr, text-descr
 			,	NOQUIET, 0 );
 		if(VERBOSE4)
 			fprintf( stderr, "Note: Storing comment from %s encoding\n"
-			,	enc_name(realdata[0]) );
+			,	enc_name(encoding) );
 		xcom = tt == uslt
 		?	add_uslt(fr, lang, &description)
 		:	add_comment(fr, lang, &description);
@@ -616,8 +624,8 @@ static void process_comment(mpg123_handle *fr, enum frame_types tt, unsigned cha
 		mpg123_move_string(&description, &xcom->description);
 	}
 
-	text[-1] = encoding; /* Byte abusal for encoding... */
-	store_id3_text(&xcom->text, text-1, realsize+1-(text-realdata), NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT);
+	store_id3_text( &xcom->text, encoding, text, realsize-(text-realdata)
+	,	NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT );
 	/* Remember: I will probably decode the above (again) for rva comment checking. So no messing around, please. */
 
 	if(VERBOSE4) /* Do _not_ print the verbatim text: The encoding might be funny! */
@@ -641,7 +649,8 @@ static void process_comment(mpg123_handle *fr, enum frame_types tt, unsigned cha
 		if((rva_mode > -1) && (fr->rva.level[rva_mode] <= rva_level))
 		{
 			/* Only translate the contents in here where we really need them. */
-			store_id3_text(&localcom.text, text-1, realsize+1-(text-realdata), NOQUIET, 0);
+			store_id3_text( &localcom.text, encoding, text, realsize-(text-realdata)
+			,	NOQUIET, 0 );
 			if(localcom.text.fill > 0)
 			{
 				fr->rva.gain[rva_mode] = (float) atof(localcom.text.p);
@@ -689,7 +698,7 @@ static void process_extra(mpg123_handle *fr, unsigned char* realdata, size_t rea
 		mpg123_init_string(&description);
 		/* The outside storage gets reencoded to UTF-8 only if not requested otherwise.
 		   Remember that we really need the -1 here to hand in the encoding byte!*/
-		store_id3_text( &description, descr-1, text-descr+1
+		store_id3_text( &description, encoding, descr, text-descr
 		,	NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT );
 		xex = add_extra(fr, &description);
 		if(xex)
@@ -706,10 +715,10 @@ static void process_extra(mpg123_handle *fr, unsigned char* realdata, size_t rea
 	init_mpg123_text(&localex); /* For our local copy. */
 
 	/* Our local copy is always stored in UTF-8! */
-	store_id3_text(&localex.description, descr-1, text-descr+1, NOQUIET, 0);
+	store_id3_text(&localex.description, encoding, descr, text-descr, NOQUIET, 0);
 	/* At first, only store the outside copy of the payload. We may not need the local copy. */
-	text[-1] = encoding;
-	store_id3_text(&xex->text, text-1, realsize-(text-realdata)+1, NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT);
+	store_id3_text( &xex->text, encoding, text, realsize-(text-realdata)
+	,	NOQUIET, fr->p.flags & MPG123_PLAIN_ID3TEXT );
 
 	/* Now check if we would like to interpret this extra info for RVA. */
 	if(localex.description.fill > 0)
@@ -737,7 +746,8 @@ static void process_extra(mpg123_handle *fr, unsigned char* realdata, size_t rea
 		if((rva_mode > -1) && (fr->rva.level[rva_mode] <= rva_level))
 		{
 			/* Now we need the translated copy of the data. */
-			store_id3_text(&localex.text, text-1, realsize-(text-realdata)+1, NOQUIET, 0);
+			store_id3_text( &localex.text, encoding, text, realsize-(text-realdata)
+			,	NOQUIET, 0 );
 			if(localex.text.fill > 0)
 			{
 				if(is_peak)
@@ -972,6 +982,7 @@ int INT123_parse_new_id3(mpg123_handle *fr, unsigned long first4bytes)
 	}
 	else
 	{
+		null_id3_links(fr); // Could be invalidated on frame update, null for hygiene.
 		unsigned char* tagdata = fr->id3v2_raw+10;
 		/* try to interpret that beast */
 		debug("ID3v2: analysing frames...");
@@ -1451,8 +1462,8 @@ static void convert_utf16bom(mpg123_string *sb, const unsigned char* s, size_t l
 			*p++ = (unsigned char) (0x80 | (codepoint & 0x3f));
 		} /* ignore bigger ones (that are not possible here anyway) */
 	}
-	sb->p[sb->size-1] = 0; /* paranoia... */
-	sb->fill = sb->size;
+	sb->p[length] = 0;
+	sb->fill = length+1;
 }
 #undef UTF8LEN
 #undef FULLPOINT

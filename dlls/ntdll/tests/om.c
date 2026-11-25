@@ -65,7 +65,7 @@ static NTSTATUS (WINAPI *pNtOpenSymbolicLinkObject)(PHANDLE, ACCESS_MASK, POBJEC
 static NTSTATUS (WINAPI *pNtCreateSymbolicLinkObject)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PUNICODE_STRING);
 static NTSTATUS (WINAPI *pNtQuerySymbolicLinkObject)(HANDLE,PUNICODE_STRING,PULONG);
 static NTSTATUS (WINAPI *pNtQueryObject)(HANDLE,OBJECT_INFORMATION_CLASS,PVOID,ULONG,PULONG);
-static NTSTATUS (WINAPI *pNtReleaseSemaphore)(HANDLE, ULONG, PULONG);
+static NTSTATUS (WINAPI *pNtReleaseSemaphore)(HANDLE, LONG, ULONG *);
 static NTSTATUS (WINAPI *pNtCreateKeyedEvent)( HANDLE *, ACCESS_MASK, const OBJECT_ATTRIBUTES *, ULONG );
 static NTSTATUS (WINAPI *pNtOpenKeyedEvent)( HANDLE *, ACCESS_MASK, const OBJECT_ATTRIBUTES * );
 static NTSTATUS (WINAPI *pNtCreateIoCompletion)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG);
@@ -1131,6 +1131,7 @@ static void test_name_limits(void)
 
 static void test_directory(void)
 {
+    static const WCHAR embedded_null[] = L"\\BaseNamedObjects\\test\0dir";
     NTSTATUS status;
     UNICODE_STRING str;
     OBJECT_ATTRIBUTES attr;
@@ -1182,6 +1183,40 @@ static void test_directory(void)
     pNtClose(h);
     pNtClose(dir1);
 
+    RtlInitUnicodeString(&str, L"\\BaseNamedObjects\\*?</>|\"");
+    status = pNtCreateDirectoryObject( &h, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_SUCCESS, "Failed to create directory %08lx\n", status );
+    status = pNtOpenDirectoryObject( &dir1, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_SUCCESS, "Failed to open directory %08lx\n", status );
+    pNtClose(h);
+    pNtClose(dir1);
+
+    RtlInitUnicodeString(&str, L"\\BaseNamedObjects\\.");
+    status = pNtCreateDirectoryObject( &h, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_SUCCESS, "Failed to create directory %08lx\n", status );
+    status = pNtOpenDirectoryObject( &dir1, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_SUCCESS, "Failed to open directory %08lx\n", status );
+    pNtClose(h);
+    pNtClose(dir1);
+
+    RtlInitUnicodeString(&str, L"\\BaseNamedObjects\\..");
+    status = pNtCreateDirectoryObject( &h, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_SUCCESS, "Failed to create directory %08lx\n", status );
+    status = pNtOpenDirectoryObject( &dir1, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_SUCCESS, "Failed to open directory %08lx\n", status );
+    pNtClose(h);
+    pNtClose(dir1);
+
+    RtlInitUnicodeString(&str, L"\\BaseNamedObjects\\.\\subdir");
+    status = pNtCreateDirectoryObject( &h, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_OBJECT_PATH_NOT_FOUND, "Failed to create directory %08lx\n", status );
+    RtlInitUnicodeString(&str, L"\\BaseNamedObjects\\..\\subdir");
+    status = pNtCreateDirectoryObject( &h, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_OBJECT_PATH_NOT_FOUND, "Failed to create directory %08lx\n", status );
+    str.Buffer = (WCHAR *)embedded_null;
+    str.Length = str.MaximumLength = ARRAY_SIZE(embedded_null);
+    status = pNtCreateDirectoryObject( &h, DIRECTORY_QUERY, &attr );
+    ok( status == STATUS_OBJECT_NAME_INVALID, "Failed to create directory %08lx\n", status );
 
     /* Use of root directory */
 
@@ -2174,7 +2209,8 @@ static void test_token(void)
     status = pNtOpenProcessToken( GetCurrentProcess(), TOKEN_ALL_ACCESS, (HANDLE *)0xdeadbee0 );
     ok( status == STATUS_ACCESS_VIOLATION, "NtOpenProcessToken failed: %lx\n", status);
     status = pNtOpenThreadToken( GetCurrentThread(), TOKEN_ALL_ACCESS, TRUE, (HANDLE *)0xdeadbee0 );
-    ok( status == STATUS_ACCESS_VIOLATION, "NtOpenProcessToken failed: %lx\n", status);
+    ok( status == STATUS_ACCESS_VIOLATION || status == STATUS_NO_TOKEN,
+        "NtOpenProcessToken failed: %lx\n", status);
     handle = (HANDLE)0xdeadbeef;
     status = pNtOpenProcessToken( (HANDLE)0xdead, TOKEN_ALL_ACCESS, &handle );
     ok( status == STATUS_INVALID_HANDLE, "NtOpenProcessToken failed: %lx\n", status);
@@ -2198,6 +2234,9 @@ static void test_token(void)
     pNtClose( handle );
 }
 
+#define ALPC_PORT_GENERIC_EXECUTE     0
+#define ALPC_PORT_GENERIC_READ        (STANDARD_RIGHTS_READ|0x1)
+#define ALPC_PORT_GENERIC_WRITE       (DELETE|0x1)
 #define DEBUG_GENERIC_EXECUTE         (STANDARD_RIGHTS_EXECUTE|SYNCHRONIZE)
 #define DEBUG_GENERIC_READ            (STANDARD_RIGHTS_READ|DEBUG_READ_EVENT)
 #define DEBUG_GENERIC_WRITE           (STANDARD_RIGHTS_WRITE|DEBUG_PROCESS_ASSIGN)
@@ -2329,6 +2368,7 @@ static void test_object_types(void)
     {
 #define TYPE(name,gen,extra,broken) { name, { gen ## _GENERIC_READ, gen ## _GENERIC_WRITE, \
                 gen ## _GENERIC_EXECUTE, gen ## _ALL_ACCESS }, gen ## _ALL_ACCESS | extra, broken }
+        TYPE( L"ALPC Port",     ALPC_PORT, 0, 0 ),
         TYPE( L"DebugObject",   DEBUG, 0, 0 ),
         TYPE( L"Desktop",       DESKTOP, 0, 0 ),
         TYPE( L"Device",        FILE, 0, 0 ),

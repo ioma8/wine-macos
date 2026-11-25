@@ -27,7 +27,6 @@
 #define ATL_INITGUID
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "windef.h"
 #include "winbase.h"
 #include "winuser.h"
@@ -234,6 +233,7 @@ static int read_file( const WCHAR *name, void **data, SIZE_T *size )
     if (read( fd, file_buffer, header_size ) != header_size) goto done;
     dos = file_buffer;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) goto done;
+    if ((ULONG)dos->e_lfanew >= RTL_IMAGE_MAX_DOS_HEADER) goto done;
     if (dos->e_lfanew < sizeof(*dos) + 32) goto done;
     if (memcmp( dos + 1, builtin_signature, strlen(builtin_signature) + 1 ) &&
         memcmp( dos + 1, fakedll_signature, strlen(fakedll_signature) + 1 )) goto done;
@@ -375,6 +375,7 @@ static BOOL is_fake_dll( HANDLE h )
         return FALSE;
     dos = (IMAGE_DOS_HEADER *)buffer;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) return FALSE;
+    if ((ULONG)dos->e_lfanew >= RTL_IMAGE_MAX_DOS_HEADER) return FALSE;
     if (dos->e_lfanew < size) return FALSE;
     return (!memcmp( dos + 1, builtin_signature, sizeof(builtin_signature) ) ||
             !memcmp( dos + 1, fakedll_signature, sizeof(fakedll_signature) ));
@@ -503,11 +504,13 @@ static HANDLE create_dest_file( const WCHAR *name, BOOL delete )
         }
         /* truncate the file */
         SetFilePointer( h, 0, NULL, FILE_BEGIN );
-        SetEndOfFile( h );
+        if (SetEndOfFile( h )) return h;
+        CloseHandle( h );
     }
-    else if (GetLastError() == ERROR_SHARING_VIOLATION &&
-             (h = CreateFileW( name, GENERIC_READ, FILE_SHARE_READ, NULL,
-                               OPEN_EXISTING, 0, NULL )) != INVALID_HANDLE_VALUE)
+
+    if ((GetLastError() == ERROR_SHARING_VIOLATION || GetLastError() == ERROR_USER_MAPPED_FILE) &&
+        (h = CreateFileW( name, GENERIC_READ, FILE_SHARE_READ, NULL,
+                          OPEN_EXISTING, 0, NULL )) != INVALID_HANDLE_VALUE)
     {
         if (!is_fake_dll( h ))
         {
@@ -667,22 +670,40 @@ static BOOL next_xml_attr(xmlbuf_t* xmlbuf, xmlstr_t* name, xmlstr_t* value, BOO
     return TRUE;
 }
 
+static unsigned int append_string( WCHAR *buffer, const xmlstr_t *str, unsigned int maxlen )
+{
+    static const char valid_chars[] = "-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    unsigned int i, len;
+
+    if (!str->len) return 0;
+    for (i = len = 0; i < str->len; i++)
+        if (strchr( valid_chars, str->ptr[i] )) buffer[len++] = (WCHAR)str->ptr[i];
+    if (len > maxlen)
+    {
+        unsigned int pos = maxlen / 2;
+        buffer[pos - 1] = buffer[pos] = '.';
+        memmove( buffer + pos + 1, buffer + len - pos + 1, (pos - 1) * sizeof(WCHAR) );
+        len = maxlen;
+    }
+    buffer[len++] = '_';
+    buffer[len] = 0;
+    wcslwr( buffer );
+    return len;
+}
+
 static void append_manifest_filename( const xmlstr_t *arch, const xmlstr_t *name, const xmlstr_t *key,
                                       const xmlstr_t *version, const xmlstr_t *lang, WCHAR *buffer, DWORD size )
 {
     DWORD pos = lstrlenW( buffer );
 
-    pos += MultiByteToWideChar( CP_UTF8, 0, arch->ptr, arch->len, buffer + pos, size - pos );
-    buffer[pos++] = '_';
-    pos += MultiByteToWideChar( CP_UTF8, 0, name->ptr, name->len, buffer + pos, size - pos );
-    buffer[pos++] = '_';
+    pos += append_string( buffer + pos, arch, 16 );
+    pos += append_string( buffer + pos, name, 40 );
     pos += MultiByteToWideChar( CP_UTF8, 0, key->ptr, key->len, buffer + pos, size - pos );
     buffer[pos++] = '_';
     pos += MultiByteToWideChar( CP_UTF8, 0, version->ptr, version->len, buffer + pos, size - pos );
     buffer[pos++] = '_';
-    pos += MultiByteToWideChar( CP_UTF8, 0, lang->ptr, lang->len, buffer + pos, size - pos );
-    lstrcpyW( buffer + pos, L"_deadbeef" );
-    wcslwr( buffer );
+    pos += append_string( buffer + pos, lang, 8 );
+    lstrcpyW( buffer + pos, L"deadbeef" );
 }
 
 static WCHAR* create_winsxs_dll_path( const xmlstr_t *arch, const xmlstr_t *name,

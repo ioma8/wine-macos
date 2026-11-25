@@ -4,15 +4,18 @@ IMPORTS   = uuid rpcrt4 user32 gdi32 win32u
 DELAYIMPORTS = ole32 shell32 imm32
 UNIX_LIBS    = \
 	-lwin32u \
+	-framework Accelerate \
 	-framework AppKit \
 	-framework Carbon \
-	-framework CoreVideo \
 	-framework Foundation \
 	-framework IOKit \
+	-framework IOSurface \
 	-framework Metal \
 	-framework OpenGL \
 	-framework QuartzCore \
 	-framework Security \
+
+VER_FILEDESCRIPTION_STR = "Wine Mac driver"
 
 SOURCES = \
 	clipboard.c \
@@ -30,6 +33,7 @@ SOURCES = \
 	event.c \
 	gdi.c \
 	image.c \
+	ime.c \
 	keyboard.c \
 	macdrv_main.c \
 	mouse.c \

@@ -138,6 +138,7 @@ static const struct wined3d_extension_map gl_extension_map[] =
     {"GL_ARB_texture_env_combine",          ARB_TEXTURE_ENV_COMBINE       },
     {"GL_ARB_texture_env_dot3",             ARB_TEXTURE_ENV_DOT3          },
     {"GL_ARB_texture_filter_anisotropic",   ARB_TEXTURE_FILTER_ANISOTROPIC},
+    {"GL_ARB_texture_filter_minmax",        ARB_TEXTURE_FILTER_MINMAX     },
     {"GL_ARB_texture_float",                ARB_TEXTURE_FLOAT             },
     {"GL_ARB_texture_gather",               ARB_TEXTURE_GATHER            },
     {"GL_ARB_texture_mirrored_repeat",      ARB_TEXTURE_MIRRORED_REPEAT   },
@@ -1310,6 +1311,8 @@ cards_nvidia_binary[] =
     {"RTX 4060",                    CARD_NVIDIA_GEFORCE_RTX4060},
     {"Tesla T4",                    CARD_NVIDIA_TESLA_T4},
     {"Ampere A10",                  CARD_NVIDIA_AMPERE_A10},
+    {"NVIDIA A10G",                 CARD_NVIDIA_AMPERE_A10G},
+    {"NVIDIA L4",                   CARD_NVIDIA_L4},
     {"RTX 3090 Ti",                 CARD_NVIDIA_GEFORCE_RTX3090TI},
     {"RTX 3090",                    CARD_NVIDIA_GEFORCE_RTX3090},
     {"RTX 3080 Ti",                 CARD_NVIDIA_GEFORCE_RTX3080TI},
@@ -1666,6 +1669,8 @@ cards_amd_mesa[] =
 {
     /* Navi 4x */
     {"gfx1200",                     CARD_AMD_RADEON_RX_NAVI_44},
+    /* Navi 2x */
+    {"rembrandt",                   CARD_AMD_RADEON_680M},
     /* Navi 10/14 */
     {"NAVI10",                      CARD_AMD_RADEON_RX_NAVI_10},
     {"NAVI14",                      CARD_AMD_RADEON_RX_NAVI_14},
@@ -3977,7 +3982,6 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
             if (!GL_EXTCALL(wglGetPixelFormatAttribivARB(dc, format_id, 0, attrib_count, attribs, values)))
                 continue;
 
-            cfg->iPixelFormat = format_id;
             cfg->redSize = values[0];
             cfg->greenSize = values[1];
             cfg->blueSize = values[2];
@@ -4010,7 +4014,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
 
             TRACE("iPixelFormat=%d, iPixelType=%#x, doubleBuffer=%d, RGBA=%d/%d/%d/%d, "
                     "depth=%d, stencil=%d, samples=%d, windowDrawable=%d\n",
-                    cfg->iPixelFormat, cfg->iPixelType, cfg->doubleBuffer,
+                    format_id, cfg->iPixelType, cfg->doubleBuffer,
                     cfg->redSize, cfg->greenSize, cfg->blueSize, cfg->alphaSize,
                     cfg->depthSize, cfg->stencilSize, cfg->numSamples, cfg->windowDrawable);
 
@@ -4043,7 +4047,6 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
                 continue;
             }
 
-            cfg->iPixelFormat = format_id;
             cfg->redSize = pfd.cRedBits;
             cfg->greenSize = pfd.cGreenBits;
             cfg->blueSize = pfd.cBlueBits;
@@ -4060,7 +4063,7 @@ static void wined3d_adapter_init_fb_cfgs(struct wined3d_adapter_gl *adapter_gl, 
 
             TRACE("iPixelFormat=%d, iPixelType=%#x, doubleBuffer=%d, RGBA=%d/%d/%d/%d, "
                     "depth=%d, stencil=%d, windowDrawable=%d\n",
-                    cfg->iPixelFormat, cfg->iPixelType, cfg->doubleBuffer,
+                    format_id, cfg->iPixelType, cfg->doubleBuffer,
                     cfg->redSize, cfg->greenSize, cfg->blueSize, cfg->alphaSize,
                     cfg->depthSize, cfg->stencilSize, cfg->windowDrawable);
 
@@ -4562,13 +4565,23 @@ static HRESULT adapter_gl_create_rendertarget_view(const struct wined3d_view_des
         struct wined3d_rendertarget_view **view)
 {
     struct wined3d_rendertarget_view_gl *view_gl;
+    unsigned int view_count = 1;
     HRESULT hr;
 
     TRACE("desc %s, resource %p, parent %p, parent_ops %p, view %p.\n",
             wined3d_debug_view_desc(desc, resource), resource, parent, parent_ops, view);
 
-    if (!(view_gl = calloc(1, sizeof(*view_gl))))
+    if (resource->type != WINED3D_RTYPE_BUFFER)
+    {
+        struct wined3d_texture *texture = texture_from_resource(resource);
+        if (texture->swapchain)
+            view_count = texture->swapchain->state.desc.backbuffer_count;
+    }
+
+    if (!(view_gl = calloc(1, offsetof(struct wined3d_rendertarget_view_gl, gl_view[view_count]))))
         return E_OUTOFMEMORY;
+
+    view_gl->view_count = view_count;
 
     if (FAILED(hr = wined3d_rendertarget_view_gl_init(view_gl, desc, resource, parent, parent_ops)))
     {
@@ -4650,11 +4663,15 @@ static void adapter_gl_destroy_rendertarget_view(struct wined3d_rendertarget_vie
 {
     struct wined3d_rendertarget_view_gl *view_gl = wined3d_rendertarget_view_gl(view);
     struct wined3d_resource *resource = view_gl->v.resource;
+    unsigned int i;
 
     TRACE("view_gl %p.\n", view_gl);
 
     wined3d_rendertarget_view_cleanup(&view_gl->v);
-    wined3d_view_gl_destroy(resource->device, &view_gl->gl_view, NULL, NULL, view_gl);
+    for (i = view_gl->view_count - 1; i; --i)
+        wined3d_view_gl_destroy(resource->device, &view_gl->gl_view[i], NULL, NULL, NULL);
+
+    wined3d_view_gl_destroy(resource->device, &view_gl->gl_view[0], NULL, NULL, view_gl);
 }
 
 static HRESULT adapter_gl_create_shader_resource_view(const struct wined3d_view_desc *desc,
@@ -4944,6 +4961,7 @@ static void wined3d_adapter_gl_init_d3d_info(struct wined3d_adapter_gl *adapter_
     d3d_info->viewport_array_index_any_shader = !!gl_info->supported[ARB_SHADER_VIEWPORT_LAYER_ARRAY];
     d3d_info->stencil_export = !!gl_info->supported[ARB_SHADER_STENCIL_EXPORT];
     d3d_info->simple_instancing = !!gl_info->supported[ARB_INSTANCED_ARRAYS];
+    d3d_info->min_max_filtering = !!gl_info->supported[ARB_TEXTURE_FILTER_MINMAX];
     d3d_info->unconditional_npot = !!gl_info->supported[ARB_TEXTURE_NON_POWER_OF_TWO];
     d3d_info->draw_base_vertex_offset = !!gl_info->supported[ARB_DRAW_ELEMENTS_BASE_VERTEX];
     d3d_info->vertex_bgra = !!gl_info->supported[ARB_VERTEX_ARRAY_BGRA];

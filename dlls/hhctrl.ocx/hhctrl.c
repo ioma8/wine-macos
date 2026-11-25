@@ -377,6 +377,15 @@ HWND WINAPI HtmlHelpW(HWND caller, LPCWSTR filename, UINT command, DWORD_PTR dat
         free(window);
         return 0;
     }
+    case HH_INITIALIZE:
+        /* Return a non-zero cookie that is later passed back to
+         * HH_UNINITIALIZE.  Applications check this value and treat a NULL
+         * cookie as an initialization failure. */
+        if (data)
+            *(DWORD *)data = 1;
+        return 0;
+    case HH_UNINITIALIZE:
+        return 0;
     default:
         FIXME("HH case %s not handled.\n", command_to_string( command ));
     }
@@ -408,7 +417,7 @@ static void wintypeWtoA(const HH_WINTYPEW *wdata, HH_WINTYPEA *data, struct wint
     data->pszType       = stringsA->pszType       = strdupWtoA(wdata->pszType);
     data->pszCaption    = stringsA->pszCaption    = strdupWtoA(wdata->pszCaption);
     data->pszToc        = stringsA->pszToc        = strdupWtoA(wdata->pszToc);
-    data->pszIndex      = stringsA->pszFile       = strdupWtoA(wdata->pszIndex);
+    data->pszIndex      = stringsA->pszIndex      = strdupWtoA(wdata->pszIndex);
     data->pszFile       = stringsA->pszFile       = strdupWtoA(wdata->pszFile);
     data->pszHome       = stringsA->pszHome       = strdupWtoA(wdata->pszHome);
     data->pszJump1      = stringsA->pszJump1      = strdupWtoA(wdata->pszJump1);

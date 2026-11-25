@@ -1332,6 +1332,15 @@ static const struct knownFolderDef known_folders[] = {
                  NULL,
                  0,
                  KFDF_PRECREATE | KFDF_ROAMABLE),
+    KNOWN_FOLDER(FOLDERID_AppDataDocuments,
+                 NO_CSIDL,
+                 "AppDataDocuments",
+                 KF_CATEGORY_PERUSER,
+                 FOLDERID_LocalAppData, GUID_NULL,
+                 "Documents",
+                 NULL,
+                 0,
+                 KFDF_PRECREATE | KFDF_ROAMABLE),
 };
 #undef KNOWN_FOLDER
 BOOL known_folder_found[ARRAY_SIZE(known_folders)];
@@ -2935,8 +2944,8 @@ if (0) { /* crashes on native */
     pidl = (void*)0xdeadbeef;
     hr = pSHGetKnownFolderIDList(&FOLDERID_Desktop, KF_FLAG_NO_ALIAS, NULL, &pidl);
     ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
-    todo_wine ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
-    todo_wine ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
+    ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
+    ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
     ILFree(pidl);
 
     pidl = (void*)0xdeadbeef;
@@ -2948,6 +2957,41 @@ if (0) { /* crashes on native */
 
     pidl = (void*)0xdeadbeef;
     hr = pSHGetKnownFolderIDList(&FOLDERID_Documents, KF_FLAG_NO_ALIAS, NULL, &pidl);
+    ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
+    ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
+    ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
+    ILFree(pidl);
+
+    pidl = (void*)0xdeadbeef;
+    hr = pSHGetKnownFolderIDList(&FOLDERID_RecycleBinFolder, KF_FLAG_NO_ALIAS, NULL, &pidl);
+    ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
+    ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
+    ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
+    ILFree(pidl);
+
+    pidl = (void*)0xdeadbeef;
+    hr = pSHGetKnownFolderIDList(&FOLDERID_ComputerFolder, KF_FLAG_NO_ALIAS, NULL, &pidl);
+    ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
+    ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
+    ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
+    ILFree(pidl);
+
+    pidl = (void*)0xdeadbeef;
+    hr = pSHGetKnownFolderIDList(&FOLDERID_PrintersFolder, KF_FLAG_NO_ALIAS, NULL, &pidl);
+    ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
+    ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
+    ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
+    ILFree(pidl);
+
+    pidl = (void*)0xdeadbeef;
+    hr = pSHGetKnownFolderIDList(&FOLDERID_ControlPanelFolder, KF_FLAG_NO_ALIAS, NULL, &pidl);
+    ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
+    ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
+    ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);
+    ILFree(pidl);
+
+    pidl = (void*)0xdeadbeef;
+    hr = pSHGetKnownFolderIDList(&FOLDERID_NetworkFolder, KF_FLAG_NO_ALIAS, NULL, &pidl);
     ok(hr == S_OK, "SHGetKnownFolderIDList failed: 0x%08lx\n", hr);
     ok(!ILIsEmpty(pidl), "pidl should not be empty.\n");
     ok(pidl->mkid.cb == 20, "get wrong value: %d\n", pidl->mkid.cb);

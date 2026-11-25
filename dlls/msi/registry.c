@@ -144,11 +144,11 @@ BOOL decode_base85_guid( LPCWSTR str, GUID *guid )
             val = 0;
             base = 1;
         }
-        val += table_dec85[str[i]] * base;
         if( str[i] >= 0x80 )
             return FALSE;
         if( table_dec85[str[i]] == 0xff )
             return FALSE;
+        val += table_dec85[str[i]] * base;
         if( (i%5) == 4 )
             p[i/5] = val;
         base *= 85;
@@ -953,8 +953,16 @@ UINT WINAPI MsiDecomposeDescriptorW( LPCWSTR szDescriptor, LPWSTR szProduct,
     }
     if (szFeature)
     {
-        memcpy( szFeature, &szDescriptor[20], len*sizeof(WCHAR) );
-        szFeature[len] = 0;
+        if (!len) /* Single feature was not encoded, figure it out */
+        {
+            if (MsiEnumFeaturesW( szProduct, 0, szFeature, NULL ) != ERROR_SUCCESS)
+                return ERROR_INVALID_PARAMETER;
+        }
+        else
+        {
+            memcpy( szFeature, &szDescriptor[20], len*sizeof(WCHAR) );
+            szFeature[len] = 0;
+        }
     }
 
     len = p - szDescriptor + 1;

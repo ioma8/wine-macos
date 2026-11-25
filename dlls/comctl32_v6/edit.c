@@ -337,10 +337,16 @@ static SCRIPT_STRING_ANALYSIS EDIT_UpdateUniscribeData_linedef(EDITSTATE *es, HD
 		tabdef.pTabStops = es->tabs;
 		tabdef.iTabOrigin = 0;
 
-		hr = ScriptStringAnalyse(udc, &es->text[index], line_def->net_length,
-                                         (1.5*line_def->net_length+16), -1,
-                                         SSA_LINK|SSA_FALLBACK|SSA_GLYPHS|SSA_TAB, -1,
-                                         NULL, NULL, NULL, &tabdef, NULL, &line_def->ssa);
+		if (es->style & ES_PASSWORD)
+			hr = ScriptStringAnalyse(udc, &es->password_char, line_def->net_length,
+                                                  (1.5*line_def->net_length+16), -1,
+                                                  SSA_LINK|SSA_FALLBACK|SSA_GLYPHS|SSA_TAB|SSA_PASSWORD, -1,
+                                                  NULL, NULL, NULL, &tabdef, NULL, &line_def->ssa);
+		else
+			hr = ScriptStringAnalyse(udc, &es->text[index], line_def->net_length,
+                                                  (1.5*line_def->net_length+16), -1,
+                                                  SSA_LINK|SSA_FALLBACK|SSA_GLYPHS|SSA_TAB, -1,
+                                                  NULL, NULL, NULL, &tabdef, NULL, &line_def->ssa);
 		if (FAILED(hr))
 		{
 			WARN("ScriptStringAnalyse failed, hr %#lx.\n", hr);
@@ -2810,15 +2816,12 @@ static void EDIT_EM_SetMargins(EDITSTATE *es, INT action,
  *	EM_SETPASSWORDCHAR
  *
  */
-static void EDIT_EM_SetPasswordChar(EDITSTATE *es, WCHAR c)
+static BOOL EDIT_EM_SetPasswordChar(EDITSTATE *es, WCHAR c)
 {
 	LONG style;
 
-	if (es->style & ES_MULTILINE)
-		return;
-
 	if (es->password_char == c)
-		return;
+		return TRUE;
 
         style = GetWindowLongW( es->hwndSelf, GWL_STYLE );
 	es->password_char = c;
@@ -2831,6 +2834,7 @@ static void EDIT_EM_SetPasswordChar(EDITSTATE *es, WCHAR c)
 	}
 	EDIT_InvalidateUniscribeData(es);
 	EDIT_UpdateText(es, NULL, TRUE);
+	return TRUE;
 }
 
 
@@ -3452,8 +3456,8 @@ static LRESULT EDIT_WM_LButtonDblClk(EDITSTATE *es)
 	INT li;
 	INT ll;
 
-	es->bCaptureState = TRUE;
 	SetCapture(es->hwndSelf);
+	es->bCaptureState = TRUE;
 
 	l = EDIT_EM_LineFromChar(es, e);
 	li = EDIT_EM_LineIndex(es, l);
@@ -3476,8 +3480,8 @@ static LRESULT EDIT_WM_LButtonDown(EDITSTATE *es, DWORD keys, INT x, INT y)
 	INT e;
 	BOOL after_wrap;
 
-	es->bCaptureState = TRUE;
 	SetCapture(es->hwndSelf);
+	es->bCaptureState = TRUE;
 	EDIT_ConfinePoint(es, &x, &y);
 	e = EDIT_CharFromPos(es, x, y, &after_wrap);
 	EDIT_EM_SetSel(es, (keys & MK_SHIFT) ? es->selection_start : e, e, after_wrap);
@@ -4628,7 +4632,7 @@ static LRESULT CALLBACK EDIT_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         break;
 
     case EM_SETPASSWORDCHAR:
-        EDIT_EM_SetPasswordChar(es, wParam);
+        result = EDIT_EM_SetPasswordChar(es, wParam);
         break;
 
     case EM_EMPTYUNDOBUFFER:

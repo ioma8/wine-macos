@@ -28,7 +28,6 @@
 #include <stdlib.h>
 
 #include "ntstatus.h"
-#define WIN32_NO_STATUS
 #include "waylanddrv.h"
 #include "wine/debug.h"
 
@@ -39,34 +38,24 @@ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs;
 
-static VkResult wayland_vulkan_surface_create(HWND hwnd, const struct vulkan_instance *instance, VkSurfaceKHR *handle,
-                                              struct client_surface **client)
+static VkResult wayland_vulkan_surface_create(struct client_surface *client, const struct vulkan_instance *instance, VkSurfaceKHR *handle)
 {
     VkResult res;
     VkWaylandSurfaceCreateInfoKHR create_info_host;
-    struct wayland_client_surface *surface;
+    struct wayland_client_surface *surface = impl_from_client_surface(client);
+    HWND hwnd = client->hwnd;
 
-    TRACE("%p %p %p %p\n", hwnd, instance, handle, client);
+    TRACE("%s %p %p\n", debugstr_client_surface(client), instance, handle);
 
-    if (!(surface = wayland_client_surface_create(hwnd))) return VK_ERROR_OUT_OF_HOST_MEMORY;
     create_info_host.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
     create_info_host.pNext = NULL;
     create_info_host.flags = 0; /* reserved */
     create_info_host.display = process_wayland.wl_display;
     create_info_host.surface = surface->wl_surface;
-
-    res = instance->p_vkCreateWaylandSurfaceKHR(instance->host.instance, &create_info_host, NULL /* allocator */, handle);
-    if (res != VK_SUCCESS)
-    {
-        ERR("Failed to create vulkan wayland surface, res=%d\n", res);
-        client_surface_release(&surface->client);
-        return res;
-    }
-
+    if ((res = instance->p_vkCreateWaylandSurfaceKHR(instance->host.instance, &create_info_host, NULL /* allocator */, handle))) return res;
     set_client_surface(hwnd, surface);
-    *client = &surface->client;
 
-    TRACE("Created surface=0x%s, client=%p\n", wine_dbgstr_longlong(*handle), *client);
+    TRACE("Created surface=0x%s\n", wine_dbgstr_longlong(*handle));
     return VK_SUCCESS;
 }
 
@@ -81,20 +70,28 @@ static VkBool32 wayland_get_physical_device_presentation_support(struct vulkan_p
                                                                         process_wayland.wl_display);
 }
 
-static const char *wayland_get_host_extension(const char *name)
+static void wayland_map_instance_extensions(struct vulkan_instance_extensions *extensions)
 {
-    if (!strcmp( name, "VK_KHR_win32_surface" )) return "VK_KHR_wayland_surface";
-    if (!strcmp( name, "VK_KHR_external_memory_win32" )) return "VK_KHR_external_memory_fd";
-    if (!strcmp( name, "VK_KHR_external_semaphore_win32" )) return "VK_KHR_external_semaphore_fd";
-    if (!strcmp( name, "VK_KHR_external_fence_win32" )) return "VK_KHR_external_fence_fd";
-    return name;
+    if (extensions->has_VK_KHR_win32_surface) extensions->has_VK_KHR_wayland_surface = 1;
+    if (extensions->has_VK_KHR_wayland_surface) extensions->has_VK_KHR_win32_surface = 1;
+}
+
+static void wayland_map_device_extensions(struct vulkan_device_extensions *extensions)
+{
+    if (extensions->has_VK_KHR_external_memory_win32) extensions->has_VK_KHR_external_memory_fd = 1;
+    if (extensions->has_VK_KHR_external_memory_fd) extensions->has_VK_KHR_external_memory_win32 = 1;
+    if (extensions->has_VK_KHR_external_semaphore_win32) extensions->has_VK_KHR_external_semaphore_fd = 1;
+    if (extensions->has_VK_KHR_external_semaphore_fd) extensions->has_VK_KHR_external_semaphore_win32 = 1;
+    if (extensions->has_VK_KHR_external_fence_win32) extensions->has_VK_KHR_external_fence_fd = 1;
+    if (extensions->has_VK_KHR_external_fence_fd) extensions->has_VK_KHR_external_fence_win32 = 1;
 }
 
 static const struct vulkan_driver_funcs wayland_vulkan_driver_funcs =
 {
     .p_vulkan_surface_create = wayland_vulkan_surface_create,
     .p_get_physical_device_presentation_support = wayland_get_physical_device_presentation_support,
-    .p_get_host_extension = wayland_get_host_extension,
+    .p_map_instance_extensions = wayland_map_instance_extensions,
+    .p_map_device_extensions = wayland_map_device_extensions,
 };
 
 /**********************************************************************

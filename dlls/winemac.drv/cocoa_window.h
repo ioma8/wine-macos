@@ -19,6 +19,7 @@
  */
 
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 
 
 @class WineEventQueue;
@@ -44,9 +45,6 @@
     void* hwnd;
     WineEventQueue* queue;
 
-    CGDirectDisplayID _lastDisplayID;
-    NSTimeInterval _lastDisplayTime;
-
     NSRect wineFrame;
     NSRect roundedWineFrame;
 
@@ -59,7 +57,7 @@
     NSRect frameAtResizeStart;
     BOOL resizingFromLeft, resizingFromTop;
 
-    void* himc;
+    void* ime_update;
     BOOL commandDone;
 
     NSSize savedContentMinSize;
@@ -76,11 +74,11 @@
 
     NSTimeInterval lastDockIconSnapshot;
 
-    BOOL allowKeyRepeats;
-
     BOOL ignore_windowDeminiaturize;
     BOOL ignore_windowResize;
     BOOL fakingClose;
+
+    CAShapeLayer* contentViewMaskLayer;
 }
 
 @property (retain, readonly, nonatomic) WineEventQueue* queue;
@@ -107,6 +105,6 @@
 
     - (void) updateForCursorClipping;
 
-    - (void) setRetinaMode:(int)mode;
+    - (void) setRetinaMode:(BOOL)mode;
 
 @end
